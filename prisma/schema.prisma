@@ -1,0 +1,673 @@
+// Sahayog AI — Prisma Schema
+// Prisma Postgres (db.prisma.io) — auto-generated IDs via cuid
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // URL moved to prisma.config.ts for Prisma 7
+}
+
+// ─────────────────────────────────────────────
+// PLATFORM & TENANT (US1)
+// ─────────────────────────────────────────────
+
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String
+  code         String   @unique
+  district     String?
+  state        String?
+  regNumber    String?
+  plan         String   @default("starter") // starter | pro | enterprise
+  status       String   @default("active")  // trial | active | suspended | inactive | reactivated | offboarded
+  trialEndsAt  DateTime?
+  offboardedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  members      Member[]
+  sbAccounts   SbAccount[]
+  loans        Loan[]
+  glEntries    GlEntry[]
+  vouchers     Voucher[]
+  glAccounts   GlAccount[]
+  config       SystemConfig[]
+  configVersions TenantConfigVersion[]
+  users        User[]
+  deposits     Deposit[]
+  bodDirectors BodDirector[]
+  committees   Committee[]
+  agms         Agm[]
+  resolutions  Resolution[]
+  complianceEvents ComplianceEvent[]
+  billingOverride  TenantBilling?
+  credits         TenantCredits?
+  usageSnapshots  TenantUsageSnapshot[]
+  suspenseEntries SuspenseEntry[]
+  bankStatementUploads BankStatementUpload[]
+
+  @@map("tenants")
+}
+
+model TenantCredits {
+  id         String   @id @default(cuid())
+  tenantId   String   @unique
+  txCredits  Int      @default(0)
+  smsCredits Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_credits")
+}
+
+model TenantUsageSnapshot {
+  id               String   @id @default(cuid())
+  tenantId         String
+  period           String   // YYYY-MM
+  activeUsersPeak  Int      @default(0)
+  memberCount      Int      @default(0)
+  txnVolume        Int      @default(0)
+  storageMb        Int      @default(0)
+  aiInvocations    Int      @default(0)
+  apiCalls         Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, period])
+  @@map("tenant_usage_snapshots")
+}
+
+model SystemConfig {
+  id        String   @id @default(cuid())
+  tenantId  String
+  key       String
+  value     String
+  label     String?
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, key])
+  @@map("system_config")
+}
+
+// MT-003: Tenant-level MDA config versions for rollback
+model TenantConfigVersion {
+  id        String   @id @default(cuid())
+  tenantId  String
+  key       String   // e.g. "mda"
+  value     String   // JSON snapshot
+  version   Int      @default(1)
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_config_versions")
+}
+
+// OTP codes for member login (SMS flow)
+model OtpCode {
+  id        String   @id @default(cuid())
+  tenantId  String
+  phone     String
+  code      String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, phone])
+  @@map("otp_codes")
+}
+
+// ─────────────────────────────────────────────
+// AUTH & USERS
+// ─────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String?
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("staff") // superadmin | admin | staff | member
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// MEMBER LIFECYCLE (US2)
+// ─────────────────────────────────────────────
+
+model Member {
+  id             String   @id @default(cuid())
+  tenantId       String
+  memberNumber   String
+  firstName      String
+  lastName       String
+  dateOfBirth    DateTime?
+  gender         String?
+  phone          String?
+  email          String?
+  address        String?
+  village        String?
+  district       String?
+  state          String?
+  pincode        String?
+  aadhaarNumber  String?
+  panNumber      String?
+  occupation     String?
+  status         String   @default("active") // active | dormant | exited | deceased | suspended | blacklisted
+  kycStatus      String   @default("pending") // pending | verified | rejected
+  kycVerifiedAt  DateTime?
+  form15Status   String?  // MEM-020: EXEMPT | NOT_EXEMPT
+  form15Fy       String?  // FY when form15 last applied
+  joinDate       DateTime @default(now())
+  exitDate       DateTime?
+  exitReason     String?
+  isMinor        Boolean  @default(false)
+  guardianName   String?
+  majorityDate   DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id])
+  shareLedger    ShareLedger[]
+  nominees       Nominee[]
+  sbAccounts     SbAccount[]
+  loans          Loan[]
+  loanApplications LoanApplication[]
+  deposits       Deposit[]
+
+  @@unique([tenantId, memberNumber])
+  @@map("members")
+}
+
+model ShareLedger {
+  id            String   @id @default(cuid())
+  memberId      String
+  tenantId      String
+  transactionType String  // purchase | refund | transfer
+  shares        Int
+  faceValue     Decimal  @db.Decimal(10,2)
+  amount        Decimal  @db.Decimal(12,2)
+  date          DateTime @default(now())
+  remarks       String?
+  createdAt     DateTime @default(now())
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@map("share_ledger")
+}
+
+model Nominee {
+  id            String   @id @default(cuid())
+  memberId      String
+  name          String
+  relationship  String
+  dateOfBirth   DateTime?
+  sharePercent  Int      @default(100)
+  phone         String?
+  address       String?
+  createdAt     DateTime @default(now())
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@map("nominees")
+}
+
+// ─────────────────────────────────────────────
+// SAVINGS BANK (US3)
+// ─────────────────────────────────────────────
+
+model SbAccount {
+  id              String   @id @default(cuid())
+  tenantId        String
+  memberId        String
+  accountNumber   String
+  accountType     String   @default("savings") // savings | current | fd | rd
+  balance         Decimal  @db.Decimal(15,2) @default(0)
+  interestRate    Decimal  @db.Decimal(5,2)  @default(3.5)
+  status          String   @default("active") // active | dormant | closed
+  lastActivityAt  DateTime? @default(now()) // SB-005 dormancy
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant       @relation(fields: [tenantId], references: [id])
+  member          Member       @relation(fields: [memberId], references: [id])
+  transactions    Transaction[]
+
+  @@unique([tenantId, accountNumber])
+  @@map("sb_accounts")
+}
+
+model Transaction {
+  id              String   @id @default(cuid())
+  accountId       String
+  type            String   // credit | debit
+  category        String   // deposit | withdrawal | transfer | interest | emi | fee
+  amount          Decimal  @db.Decimal(15,2)
+  balanceAfter    Decimal  @db.Decimal(15,2)
+  reference       String?
+  remarks         String?
+  processedAt     DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  account         SbAccount @relation(fields: [accountId], references: [id])
+
+  @@map("transactions")
+}
+
+// ─────────────────────────────────────────────
+// DEPOSITS (FDR/RD/MIS) — Module 5
+// ─────────────────────────────────────────────
+
+model Deposit {
+  id              String   @id @default(cuid())
+  tenantId        String
+  memberId        String
+  depositNumber   String   // unique per tenant
+  depositType     String   // fd | rd | mis
+  principal       Decimal  @db.Decimal(15,2)
+  interestRate    Decimal  @db.Decimal(5,2)
+  tenureMonths    Int      // FDR/MIS: tenure; RD: installments
+  compoundingFreq String   @default("quarterly") // monthly | quarterly | half_yearly | yearly
+  maturityDate    DateTime?
+  maturityAmount  Decimal? @db.Decimal(15,2)  // calculated at maturity
+  rdMonthlyAmount Decimal? @db.Decimal(15,2)  // RD installment
+  status          String   @default("active")  // active | matured | prematurely_closed
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  member          Member   @relation(fields: [memberId], references: [id])
+
+  @@unique([tenantId, depositNumber])
+  @@map("deposits")
+}
+
+// ─────────────────────────────────────────────
+// LOAN LIFECYCLE (US4)
+// ─────────────────────────────────────────────
+
+model LoanApplication {
+  id              String   @id @default(cuid())
+  tenantId        String
+  memberId        String
+  guarantorMemberId String? // LN-014 guarantor (if existing member)
+  loanType        String   // personal | agricultural | business | housing | education | gold
+  amountRequested Decimal  @db.Decimal(15,2)
+  purpose         String?
+  tenureMonths    Int
+  moratoriumMonths Int    @default(0) // LN-005
+  riskScore       Decimal? @db.Decimal(5,2)
+  riskCategory    String?  // LOW | MEDIUM | HIGH | GREEN | AMBER | RED
+  status          String   @default("pending") // pending | approved | rejected | disbursed
+  remarks         String?
+  appliedAt       DateTime @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  member          Member   @relation(fields: [memberId], references: [id])
+  loan            Loan?
+
+  @@map("loan_applications")
+}
+
+model Loan {
+  id              String   @id @default(cuid())
+  tenantId        String
+  memberId        String
+  applicationId   String   @unique
+  loanNumber      String
+  loanType        String
+  principalAmount Decimal  @db.Decimal(15,2)
+  interestRate    Decimal  @db.Decimal(5,2)
+  penalRate       Decimal? @db.Decimal(5,2) // LN-006 penal interest
+  tenureMonths    Int
+  moratoriumMonths Int    @default(0) // LN-005
+  disbursedAmount Decimal  @db.Decimal(15,2)
+  disbursedAt     DateTime?
+  outstandingPrincipal Decimal @db.Decimal(15,2) @default(0)
+  outstandingInterest  Decimal @db.Decimal(15,2) @default(0)
+  outstandingPenal      Decimal @db.Decimal(15,2) @default(0) // LN-006
+  status          String   @default("active") // active | closed | npa | written-off
+  npaCategory     String?  // LN-011: standard | sma | sub_standard | doubtful_1 | doubtful_2 | doubtful_3 | loss
+  npaDate         DateTime?
+  writeOffDate    DateTime?
+  writeOffAmount  Decimal? @db.Decimal(15,2)
+  recoveredAmount Decimal? @db.Decimal(15,2) @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id])
+  member          Member          @relation(fields: [memberId], references: [id])
+  application     LoanApplication @relation(fields: [applicationId], references: [id])
+  emiSchedule     EmiSchedule[]
+
+  @@unique([tenantId, loanNumber])
+  @@map("loans")
+}
+
+model EmiSchedule {
+  id              String   @id @default(cuid())
+  loanId          String
+  installmentNo   Int
+  dueDate         DateTime
+  principal       Decimal  @db.Decimal(15,2)
+  interest        Decimal  @db.Decimal(15,2)
+  penalAmount     Decimal  @db.Decimal(15,2) @default(0) // LN-006
+  totalEmi        Decimal  @db.Decimal(15,2)
+  paidAmount      Decimal  @db.Decimal(15,2) @default(0)
+  paidAt          DateTime?
+  status          String   @default("pending") // pending | paid | partial | overdue
+  createdAt       DateTime @default(now())
+
+  loan            Loan     @relation(fields: [loanId], references: [id])
+
+  @@map("emi_schedule")
+}
+
+// ─────────────────────────────────────────────
+// FINANCIAL ACCOUNTING (US5)
+// ─────────────────────────────────────────────
+
+model GlAccount {
+  id          String   @id @default(cuid())
+  tenantId    String
+  code        String
+  name        String
+  type        String   // ASSET | LIABILITY | EQUITY | INCOME | EXPENSE
+  parentCode  String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, code])
+  @@map("gl_accounts")
+}
+
+model GlEntry {
+  id            String   @id @default(cuid())
+  tenantId      String
+  voucherId     String?
+  glCode        String
+  glName        String
+  debit         Decimal  @db.Decimal(15,2) @default(0)
+  credit        Decimal  @db.Decimal(15,2) @default(0)
+  narration     String?
+  postingDate   DateTime
+  period        String   // YYYY-MM
+  createdAt     DateTime @default(now())
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  voucher       Voucher? @relation(fields: [voucherId], references: [id])
+
+  @@map("gl_entries")
+}
+
+model Voucher {
+  id            String   @id @default(cuid())
+  tenantId      String
+  voucherNumber String
+  voucherType   String   // JV | RV | PV | BV (Journal/Receipt/Payment/Bank)
+  date          DateTime
+  narration     String?
+  totalAmount   Decimal  @db.Decimal(15,2)
+  status        String   @default("draft") // draft | pending | approved | posted | reversed
+  makerUserId   String?
+  checkerUserId String?
+  approvedAt    DateTime?
+  reversalOf    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  glEntries     GlEntry[]
+
+  @@unique([tenantId, voucherNumber])
+  @@map("vouchers")
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOGS
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  userId     String?
+  action     String
+  entity     String
+  entityId   String?
+  oldData    Json?
+  newData    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@map("audit_log")
+}
+
+model AiAuditLog {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  userId      String?
+  feature     String   // duplicate_detection | risk_scoring | etc
+  inputData   Json?
+  outputData  Json?
+  confidence  Decimal? @db.Decimal(5,4)
+  latencyMs   Int?
+  success     Boolean  @default(true)
+  errorMsg    String?
+  createdAt   DateTime @default(now())
+
+  @@map("ai_audit_log")
+}
+
+// ─────────────────────────────────────────────
+// MODULE 2 — GOVERNANCE (BOD, Committees, AGM, Resolutions)
+// ─────────────────────────────────────────────
+
+model BodDirector {
+  id           String   @id @default(cuid())
+  tenantId     String
+  name         String
+  designation  String   // President | Secretary | Treasurer | Member
+  din          String?
+  pan          String?
+  electionDate DateTime
+  termStart    DateTime
+  termEnd      DateTime
+  status       String   @default("active") // active | expired
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("bod_directors")
+}
+
+model Committee {
+  id              String   @id @default(cuid())
+  tenantId        String
+  name            String
+  committeeType   String   // LOAN_COMMITTEE | AUDIT_COMMITTEE | AGM_COMMITTEE | FINANCE_COMMITTEE
+  mandate         String?
+  memberIds      Json     // ["bodId1", "bodId2"]
+  quorumRequired  Int      @default(2)
+  meetingFreq     String?  // monthly | quarterly
+  status          String   @default("active")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("committees")
+}
+
+model Agm {
+  id            String   @id @default(cuid())
+  tenantId      String
+  fiscalYear    String   // 2024-25
+  scheduledDate DateTime
+  noticeDate    DateTime?
+  agendaItems   Json?    // string[]
+  minutesDoc    String?
+  status        String   @default("scheduled") // scheduled | conducted | minutes_approved
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  resolutions   Resolution[]
+
+  @@map("agms")
+}
+
+model Resolution {
+  id           String   @id @default(cuid())
+  tenantId     String
+  agmId        String?
+  referenceNo   String
+  date         DateTime
+  meetingType  String   // AGM | BOD | COMMITTEE
+  status       String   // PASSED | REJECTED | DEFERRED
+  subject      String
+  description  String?
+  documentPath String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  agm          Agm?     @relation(fields: [agmId], references: [id])
+
+  @@unique([tenantId, referenceNo])
+  @@map("resolutions")
+}
+
+model ComplianceEvent {
+  id            String   @id @default(cuid())
+  tenantId      String
+  eventType     String   // AGM | NABARD_RETURN | REGISTRAR_RETURN | TDS_PAYMENT | TDS_26Q | AUDIT | BOD_ELECTION
+  dueDate       DateTime
+  responsibleRole String?
+  status        String   @default("pending") // pending | completed | overdue
+  lastAlertAt   DateTime?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("compliance_events")
+}
+
+// ─────────────────────────────────────────────
+// PLATFORM BILLING (Super admin config)
+// ─────────────────────────────────────────────
+
+model PlatformConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String   // JSON for complex values
+  label     String?
+  updatedAt DateTime @updatedAt
+
+  @@map("platform_config")
+}
+
+model TenantBilling {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique
+  mrr       Decimal  @db.Decimal(12,2)  // Override: super admin set amount for this tenant
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_billing")
+}
+
+// ─────────────────────────────────────────────
+// SUSPENSE LEDGER (US5)
+// ─────────────────────────────────────────────
+
+model SuspenseEntry {
+  id             String    @id @default(cuid())
+  tenantId       String
+  suspenseNumber String    // SUS-001 style
+  amount         Decimal   @db.Decimal(15,2)
+  receiptDate    DateTime
+  narration      String?
+  status         String    @default("OPEN")  // OPEN | CLEARED | OVERDUE
+  targetGlCode   String?
+  targetGlName   String?
+  clearingNote   String?
+  clearedAt      DateTime?
+  clearedBy     String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, suspenseNumber])
+  @@map("suspense_entries")
+}
+
+// ─────────────────────────────────────────────
+// BANK RECONCILIATION
+// ─────────────────────────────────────────────
+
+model BankStatementUpload {
+  id          String   @id @default(cuid())
+  tenantId    String
+  fileName    String
+  periodStart DateTime
+  periodEnd   DateTime
+  bankName    String?   // SBI | HDFC | UCO etc
+  createdAt   DateTime @default(now())
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  entries      BankStatementEntry[]
+
+  @@map("bank_statement_uploads")
+}
+
+model BankStatementEntry {
+  id               String    @id @default(cuid())
+  uploadId         String
+  tenantId         String
+  entryDate        DateTime
+  narration        String?
+  amount           Decimal   @db.Decimal(15,2)
+  type             String    // CR | DR
+  bankRef          String?
+  matchedGlEntryId String?
+  matchedAt        DateTime?
+  isManualMatch    Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+
+  upload           BankStatementUpload @relation(fields: [uploadId], references: [id])
+
+  @@map("bank_statement_entries")
+}

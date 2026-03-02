@@ -1,0 +1,1 @@
+{"version":3,"file":"npa.d.ts","sourceRoot":"","sources":["../../src/workers/npa.ts"],"names":[],"mappings":"AAAA;;GAEG;AACH,OAAO,EAAE,MAAM,EAAE,GAAG,EAAE,MAAM,QAAQ,CAAC;AAQrC,wBAAsB,UAAU,CAAC,GAAG,EAAE,GAAG,CAAC;IAAE,QAAQ,CAAC,EAAE,MAAM,CAAA;CAAE,CAAC;;;GAuB/D;AAED,wBAAgB,cAAc,6BAS7B"}
