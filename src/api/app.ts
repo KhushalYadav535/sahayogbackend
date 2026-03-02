@@ -47,7 +47,10 @@ app.use(
             "http://127.0.0.1:3001",
             "https://sahayogai-ella.vercel.app",
         ],
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
         credentials: true,
+        optionsSuccessStatus: 200,
     })
 );
 app.use(express.json({ limit: "10mb" }));
