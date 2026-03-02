@@ -63,7 +63,7 @@ router.post("/request-otp", async (req: any, res: Response): Promise<void> => {
         res.json({ success: true, message: "OTP sent" });
     } catch (err) {
         if (err instanceof z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         res.status(500).json({ success: false, message: "Server error" });
@@ -103,7 +103,7 @@ router.post("/verify-otp", async (req: any, res: Response): Promise<void> => {
         });
     } catch (err) {
         if (err instanceof z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         res.status(500).json({ success: false, message: "Server error" });
@@ -132,6 +132,155 @@ router.post("/login", async (req: any, res: Response): Promise<void> => {
             member: { id: member.id, firstName: member.firstName, lastName: member.lastName, memberNumber: member.memberNumber },
         });
     } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// POST /api/v1/me/login-dob — Mobile + Date of Birth login (no society code / tenantId required)
+// Searches across ALL tenants by phone, then verifies DOB
+router.post("/login-dob", async (req: any, res: Response): Promise<void> => {
+    try {
+        const { phone: rawPhone, dateOfBirth } = z.object({
+            phone: z.string().min(10),
+            dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+        }).parse(req.body);
+
+        // Normalize phone — strip +91, leading 0, spaces, dashes
+        const normalized = rawPhone.replace(/\D/g, "").replace(/^91(\d{10})$/, "$1").replace(/^0(\d{10})$/, "$1");
+
+        // Search for matching phone in multiple formats (any status first)
+        const members = await prisma.member.findMany({
+            where: {
+                OR: [
+                    { phone: normalized },
+                    { phone: `+91${normalized}` },
+                    { phone: `0${normalized}` },
+                    { phone: rawPhone },
+                ],
+            },
+        });
+
+        // Dev log — remove when going to production
+        console.log(`[login-dob] phone="${rawPhone}" normalized="${normalized}" found=${members.length}`, members.map((m: any) => ({ id: m.id, phone: m.phone, status: m.status, hasDob: !!m.dateOfBirth })));
+
+        if (members.length === 0) {
+            res.status(401).json({ success: false, message: "Mobile number not registered. Please check the number registered with your society." });
+            return;
+        }
+
+        // Check activity status
+        const activeMembers = members.filter((m: any) => m.status === "active");
+        if (activeMembers.length === 0) {
+            res.status(401).json({ success: false, message: `Account is ${members[0].status}. Please contact your society manager.` });
+            return;
+        }
+
+        // Verify DOB against active members
+        const inputDob = new Date(dateOfBirth);
+        const member = activeMembers.find((m: any) => {
+            if (!m.dateOfBirth) return false;
+            const storedDob = new Date(m.dateOfBirth);
+            return (
+                storedDob.getFullYear() === inputDob.getFullYear() &&
+                storedDob.getMonth() === inputDob.getMonth() &&
+                storedDob.getDate() === inputDob.getDate()
+            );
+        });
+
+        if (!member) {
+            // If active member has no DOB on record at all
+            const noDob = activeMembers.find((m: any) => !m.dateOfBirth);
+            if (noDob) {
+                res.status(401).json({ success: false, message: "Date of birth not on record. Please contact your society to update it." });
+            } else {
+                res.status(401).json({ success: false, message: "Date of birth does not match our records. Please check and try again." });
+            }
+            return;
+        }
+
+        const token = jwt.sign(
+            { memberId: member.id, tenantId: member.tenantId, phone: member.phone },
+            process.env.MEMBER_JWT_SECRET || "fallback_member_secret",
+            { expiresIn: "24h" }
+        );
+
+        res.json({
+            success: true,
+            token,
+            member: {
+                id: member.id,
+                firstName: member.firstName,
+                lastName: member.lastName,
+                memberNumber: member.memberNumber,
+            },
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.issues });
+            return;
+        }
+        console.error("[login-dob] error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// GET /api/v1/me/summary - Dashboard stats for member portal
+router.get("/summary", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const memberId = req.member!.memberId;
+
+        // 1. SB Balance
+        const sbAccounts = await prisma.sbAccount.findMany({ where: { memberId, status: "active" } });
+        const sbBalance = sbAccounts.reduce((sum, acc) => sum + Number(acc.balance), 0);
+
+        // 2. Loans
+        const loans = await prisma.loan.findMany({ where: { memberId, status: "ACTIVE" } });
+        const activeLoansCount = loans.length;
+        const totalLoanOutstanding = loans.reduce((sum, loan) => sum + Number(loan.outstandingPrincipal), 0);
+
+        // 3. Deposits (FDR/RD)
+        const depositsList = await prisma.deposit.findMany({ where: { memberId, status: "active" } });
+        const depositsCount = depositsList.length;
+        const totalDepositAmount = depositsList.reduce((sum, dep) => sum + Number(dep.amount), 0);
+
+        // 4. Next upcoming EMI
+        const upcomingEmis = await prisma.emiSchedule.findMany({
+            where: { loan: { memberId }, status: "pending", dueDate: { gte: new Date() } },
+            orderBy: { dueDate: "asc" },
+            take: 1
+        });
+        const upcomingEMI = upcomingEmis.length > 0 ? Number(upcomingEmis[0].totalEmi) : 0;
+        const emiDueDate = upcomingEmis.length > 0 ? upcomingEmis[0].dueDate : null;
+
+        // 5. Recent transactions (last 5)
+        const accountIds = sbAccounts.map(a => a.id);
+        const recentTxns = await prisma.transaction.findMany({
+            where: { accountId: { in: accountIds } },
+            orderBy: { processedAt: "desc" },
+            take: 5
+        });
+
+        res.json({
+            success: true,
+            summary: {
+                sbBalance,
+                activeLoansCount,
+                totalLoanOutstanding,
+                depositsCount,
+                totalDepositAmount,
+                upcomingEMI,
+                emiDueDate,
+                recentTxns: recentTxns.map(t => ({
+                    id: t.id,
+                    date: t.processedAt,
+                    desc: t.remarks || t.category || "Transaction",
+                    amount: Number(t.amount),
+                    type: t.type === "credit" ? "credit" : "debit"
+                }))
+            }
+        });
+    } catch (err) {
+        console.error("[me/summary] error:", err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
@@ -250,6 +399,27 @@ router.post("/loans/:id/pay", memberAuthMiddleware, async (req: MemberAuthReques
         }
 
         res.json({ success: true, paymentRef, message: "Payment recorded successfully" });
+    } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// GET /api/v1/me/deposits
+router.get("/deposits", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const deposits = await prisma.deposit.findMany({
+            where: { memberId: req.member!.memberId },
+            select: {
+                id: true,
+                depositType: true,
+                amount: true,
+                maturityAmount: true,
+                maturityDate: true,
+                status: true,
+                interestRate: true,
+            },
+        });
+        res.json({ success: true, deposits });
     } catch {
         res.status(500).json({ success: false, message: "Server error" });
     }

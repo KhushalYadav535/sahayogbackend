@@ -53,10 +53,10 @@ router.get("/alerts", authMiddleware, requireTenant, async (req: AuthRequest, re
       include: { member: { select: { id: true, firstName: true, lastName: true, memberNumber: true } } },
     });
 
-    const loansWithDpd = await Promise.all(allLoans.map(async (l) => ({ ...l, dpd: await getLoanDpd(l.id) })));
-    const totalPortfolio = loansWithDpd.filter((l) => l.status !== "closed").reduce((s, l) => s + Number(l.outstandingPrincipal), 0);
-    const npaLoans = loansWithDpd.filter((l) => l.status === "npa" || l.dpd >= 90);
-    const overdueLoans = loansWithDpd.filter((l) => l.dpd > 0 && l.dpd < 90);
+    const loansWithDpd = await Promise.all(allLoans.map(async (l: any) => ({ ...l, dpd: await getLoanDpd(l.id) })));
+    const totalPortfolio = loansWithDpd.filter((l: any) => l.status !== "closed").reduce((s, l: any) => s + Number(l.outstandingPrincipal), 0);
+    const npaLoans = loansWithDpd.filter((l: any) => l.status === "npa" || l.dpd >= 90);
+    const overdueLoans = loansWithDpd.filter((l: any) => l.dpd > 0 && l.dpd < 90);
     const highRisk = [...npaLoans, ...overdueLoans]
       .sort((a: { dpd: number }, b: { dpd: number }) => b.dpd - a.dpd)
       .slice(0, 10)

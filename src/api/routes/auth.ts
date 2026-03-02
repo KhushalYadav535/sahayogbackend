@@ -68,7 +68,7 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
         });
     } catch (err) {
         if (err instanceof z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         console.error("[Auth] Login error:", err);
@@ -107,7 +107,69 @@ router.post("/register", async (req: Request, res: Response): Promise<void> => {
         });
     } catch (err) {
         if (err instanceof z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// POST /api/v1/auth/register-tenant (Public Self-Serve Registration)
+router.post("/register-tenant", async (req: Request, res: Response): Promise<void> => {
+    try {
+        const schema = z.object({
+            societyName: z.string().min(2),
+            adminName: z.string().min(2),
+            email: z.string().email(),
+            password: z.string().min(8)
+        });
+
+        const data = schema.parse(req.body);
+
+        // Check if user already exists
+        const existingUser = await prisma.user.findUnique({ where: { email: data.email } });
+        if (existingUser) {
+            res.status(400).json({ success: false, message: "User with this email already exists" });
+            return;
+        }
+
+        // Generate a 4-letter + 4-digit code
+        const safeName = data.societyName.replace(/[^A-Za-z]/g, "");
+        const prefix = safeName.length >= 4 ? safeName.substring(0, 4).toUpperCase() : (safeName.toUpperCase() + "SOC1").substring(0, 4);
+        const code = prefix + Math.floor(1000 + Math.random() * 9000);
+
+        // Create the new Tenant
+        const tenant = await prisma.tenant.create({
+            data: {
+                name: data.societyName,
+                code: code,
+                plan: "starter",
+                status: "active"
+            }
+        });
+
+        const passwordHash = await bcrypt.hash(data.password, 12);
+
+        // Create the Admin User
+        const user = await prisma.user.create({
+            data: {
+                email: data.email,
+                name: data.adminName,
+                passwordHash,
+                role: "admin",
+                tenantId: tenant.id,
+                status: "active"
+            }
+        });
+
+        res.status(201).json({
+            success: true,
+            tenant: { id: tenant.id, name: tenant.name, code: tenant.code },
+            user: { id: user.id, email: user.email, name: user.name, role: user.role }
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         res.status(500).json({ success: false, message: "Server error" });
