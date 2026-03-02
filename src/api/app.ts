@@ -40,13 +40,31 @@ const app = express();
 app.set("trust proxy", 1); // Trust the first proxy (Render)
 
 const corsOptions = {
-    origin: [
-        process.env.FRONTEND_URL || "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "https://sahayogai-ella.vercel.app",
-    ],
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = [
+            process.env.FRONTEND_URL,
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+            "https://sahayogai-ella.vercel.app"
+        ];
+
+        // Check if origin matches any of the allowed specific origins
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        // Also allow any vercel.app deploy previews if needed
+        if (origin.endsWith('.vercel.app')) {
+            return callback(null, true);
+        }
+
+        callback(new Error('Not allowed by CORS'));
+    },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
     credentials: true,
