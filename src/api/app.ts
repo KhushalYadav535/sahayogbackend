@@ -37,7 +37,7 @@ dotenv.config();
 const app = express();
 
 // Security & parsing
-app.use(helmet());
+app.set("trust proxy", 1); // Trust the first proxy (Render)
 app.use(
     cors({
         origin: [
@@ -53,6 +53,7 @@ app.use(
         optionsSuccessStatus: 200,
     })
 );
+app.use(helmet());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
