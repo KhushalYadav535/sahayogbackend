@@ -38,21 +38,25 @@ const app = express();
 
 // Security & parsing
 app.set("trust proxy", 1); // Trust the first proxy (Render)
-app.use(
-    cors({
-        origin: [
-            process.env.FRONTEND_URL || "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:3001",
-            "http://127.0.0.1:3001",
-            "https://sahayogai-ella.vercel.app",
-        ],
-        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
-        credentials: true,
-        optionsSuccessStatus: 200,
-    })
-);
+
+const corsOptions = {
+    origin: [
+        process.env.FRONTEND_URL || "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "https://sahayogai-ella.vercel.app",
+    ],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    credentials: true,
+    optionsSuccessStatus: 200,
+};
+
+// Handle preflight explicitly
+app.options("*", cors(corsOptions));
+app.use(cors(corsOptions));
+
 app.use(helmet());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
