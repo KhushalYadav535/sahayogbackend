@@ -36,34 +36,29 @@ dotenv.config();
 
 const app = express();
 
-// Security & parsing
-app.set("trust proxy", 1); // Trust the first proxy (Render)
+app.set("trust proxy", 1);
 
-const corsOptions = {
+// ✅ Filter out undefined values (e.g. if FRONTEND_URL is not set)
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "https://sahayogai-ella.vercel.app",
+].filter(Boolean) as string[];
+
+const corsOptions: cors.CorsOptions = {
     origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
+        // Allow requests with no origin (mobile apps, curl, Postman)
         if (!origin) return callback(null, true);
 
-        const allowedOrigins = [
-            process.env.FRONTEND_URL,
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:3001",
-            "http://127.0.0.1:3001",
-            "https://sahayogai-ella.vercel.app"
-        ];
+        if (allowedOrigins.includes(origin)) return callback(null, true);
 
-        // Check if origin matches any of the allowed specific origins
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
-        }
+        // Allow any Vercel preview deployments
+        if (origin.endsWith(".vercel.app")) return callback(null, true);
 
-        // Also allow any vercel.app deploy previews if needed
-        if (origin.endsWith('.vercel.app')) {
-            return callback(null, true);
-        }
-
-        callback(new Error('Not allowed by CORS'));
+        callback(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
@@ -71,15 +66,21 @@ const corsOptions = {
     optionsSuccessStatus: 200,
 };
 
-// Handle preflight explicitly
+// ✅ Handle preflight BEFORE helmet
 app.options("*", cors(corsOptions));
 app.use(cors(corsOptions));
 
-app.use(helmet());
+// ✅ Helmet AFTER cors, with crossOriginResourcePolicy relaxed
+app.use(
+    helmet({
+        crossOriginResourcePolicy: { policy: "cross-origin" },
+        crossOriginOpenerPolicy: false,
+    })
+);
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Logging
 if (process.env.NODE_ENV !== "test") {
     app.use(morgan("dev"));
 }
