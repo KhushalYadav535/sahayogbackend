@@ -54,7 +54,7 @@ router.get("/", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) =>
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const where = { tenantId };
         if (status)
-            where.status = status;
+            where.status = status.toLowerCase();
         if (search) {
             where.OR = [
                 { firstName: { contains: search, mode: "insensitive" } },

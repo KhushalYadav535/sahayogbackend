@@ -1,10 +1,15 @@
 import { Router, Response } from "express";
+import { z } from "zod";
 import prisma from "../../db/prisma";
 import { authMiddleware, requireRole, AuthRequest } from "../middleware/auth";
+import { postGl, currentPeriod } from "../../lib/gl-posting";
+import { STATUTORY_RESERVE_RATE, NCCT_FUND_RATE, DORMANCY_MONTHS, DEAF_ALERT_YEARS } from "../../lib/coa-rules";
+import { processNpa } from "../../workers/npa";
+import { processDayEnd } from "../../workers/day-end";
 
 const router = Router();
 
-// POST /api/v1/jobs/day-end — trigger day-end processing manually
+// ─── POST /api/v1/jobs/day-end ────────────────────────────────────────────────
 router.post("/day-end", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const tenantId = req.user?.tenantId;
@@ -13,71 +18,40 @@ router.post("/day-end", authMiddleware, requireRole("superadmin", "admin"), asyn
             return;
         }
 
-        // Apply daily interest to all active SB accounts
-        const accounts = await prisma.sbAccount.findMany({
-            where: { tenantId, status: "active" },
-        });
-
-        let processed = 0;
-        for (const acct of accounts) {
-            const dailyInterest = (Number(acct.balance) * Number(acct.interestRate)) / (100 * 365);
-            if (dailyInterest > 0.01) {
-                const newBalance = Number(acct.balance) + dailyInterest;
-                await prisma.$transaction([
-                    prisma.sbAccount.update({ where: { id: acct.id }, data: { balance: newBalance } }),
-                    prisma.transaction.create({
-                        data: {
-                            accountId: acct.id,
-                            type: "credit",
-                            category: "interest",
-                            amount: dailyInterest,
-                            balanceAfter: newBalance,
-                            remarks: "Daily interest",
-                        },
-                    }),
-                ]);
-                processed++;
-            }
-        }
-
-        // Mark overdue EMIs
-        const overdueEmis = await prisma.emiSchedule.updateMany({
-            where: {
-                dueDate: { lt: new Date() },
-                status: "pending",
-                loan: { tenantId },
-            },
-            data: { status: "overdue" },
-        });
-
-        // SB-005: Mark dormant accounts (no activity for 24 months)
-        const dormancyThreshold = new Date();
-        dormancyThreshold.setMonth(dormancyThreshold.getMonth() - 24);
-        const dormantUpdate = await prisma.sbAccount.updateMany({
-            where: {
-                tenantId,
-                status: "active",
-                OR: [
-                    { lastActivityAt: { lt: dormancyThreshold } },
-                    { lastActivityAt: null },
-                ],
-            },
-            data: { status: "dormant" },
-        });
+        // Re-use the BullMQ worker logic directly
+        const result = await processDayEnd({ data: { tenantId } } as any);
 
         res.json({
             success: true,
             message: "Day-end processing complete",
-            sbAccountsProcessed: processed,
-            overdueEmisMarked: overdueEmis.count,
-            dormantAccountsMarked: dormantUpdate.count,
+            ...result,
         });
-    } catch {
+    } catch (err) {
+        console.error("[day-end]", err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
 
-// POST /api/v1/jobs/month-end
+// ─── POST /api/v1/jobs/npa-check — Full IRAC classification ──────────────────
+router.post("/npa-check", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user?.tenantId;
+
+        // Run full IRAC classification via the worker function
+        const result = await processNpa({ data: { tenantId } } as any);
+
+        res.json({
+            success: true,
+            message: "IRAC NPA classification complete",
+            ...result,
+        });
+    } catch (err) {
+        console.error("[npa-check]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/jobs/month-end ──────────────────────────────────────────────
 router.post("/month-end", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const tenantId = req.user?.tenantId;
@@ -86,43 +60,63 @@ router.post("/month-end", authMiddleware, requireRole("superadmin", "admin"), as
             return;
         }
 
-        // Mark NPA loans (90+ days overdue)
-        const npaThreshold = new Date();
-        npaThreshold.setDate(npaThreshold.getDate() - 90);
-
-        const npaLoans = await prisma.loan.findMany({
-            where: {
-                tenantId,
-                status: "active",
-                emiSchedule: {
-                    some: {
-                        status: "overdue",
-                        dueDate: { lt: npaThreshold },
-                    },
-                },
-            },
-        });
-
-        let npaMarked = 0;
-        for (const loan of npaLoans) {
-            await prisma.loan.update({
-                where: { id: loan.id },
-                data: { status: "npa", npaDate: new Date(), npaCategory: "sub_standard" }, // LN-011: 90-day NPA -> Sub-Standard
-            });
-            npaMarked++;
-        }
+        // Run IRAC classification on month-end
+        const npaResult = await processNpa({ data: { tenantId } } as any);
 
         res.json({
             success: true,
             message: "Month-end processing complete",
-            npaLoansMarked: npaMarked,
+            npa: npaResult,
         });
-    } catch {
+    } catch (err) {
+        console.error("[month-end]", err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
 
-// POST /api/v1/jobs/usage-snapshot — aggregate usage for all tenants (super admin only, MT-005)
+// ─── POST /api/v1/jobs/fy-close — FY-close: statutory reserve + NCCT ────────
+router.post("/fy-close", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user?.tenantId;
+        if (!tenantId) {
+            res.status(403).json({ success: false, message: "Tenant required" });
+            return;
+        }
+        const period = currentPeriod();
+
+        const { netSurplus } = z.object({
+            netSurplus: z.number().positive("Net surplus must be positive for FY close"),
+        }).parse(req.body);
+
+        // COA: Statutory Reserve — 25% of net surplus (MSCS Act Sec 61)
+        const statutoryReserve = Math.round(netSurplus * STATUTORY_RESERVE_RATE * 100) / 100;
+        await postGl(tenantId, "STATUTORY_RESERVE", statutoryReserve,
+            `FY-close statutory reserve (25% of ₹${netSurplus})`, period);
+
+        // COA: NCCT Fund — 1% of net profit (MSCS Act Sec 62)
+        const ncctFund = Math.round(netSurplus * NCCT_FUND_RATE * 100) / 100;
+        await postGl(tenantId, "NCCT_FUND", ncctFund,
+            `FY-close NCCT Fund (1% of ₹${netSurplus})`, period);
+
+        res.json({
+            success: true,
+            message: "FY-close processing complete",
+            netSurplus,
+            statutoryReserve,
+            ncctFund,
+            period,
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, issues: err.issues });
+            return;
+        }
+        console.error("[fy-close]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/jobs/usage-snapshot ────────────────────────────────────────
 router.post("/usage-snapshot", authMiddleware, requireRole("superadmin"), async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const body = (req.body || {}) as { period?: string };
@@ -167,23 +161,56 @@ router.post("/usage-snapshot", authMiddleware, requireRole("superadmin"), async 
     }
 });
 
-// POST /api/v1/jobs/npa-check
-router.post("/npa-check", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
+// ─── GET /api/v1/jobs/deaf-alerts — Deposits approaching DEAF Transfer ────────
+router.get("/deaf-alerts", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const tenantId = req.user?.tenantId;
-        const npaThreshold = new Date();
-        npaThreshold.setDate(npaThreshold.getDate() - 90);
+        if (!tenantId) {
+            res.status(403).json({ success: false, message: "Tenant required" });
+            return;
+        }
 
-        const npaLoans = await prisma.loan.findMany({
+        const alertThreshold = new Date();
+        alertThreshold.setFullYear(alertThreshold.getFullYear() - Math.floor(DEAF_ALERT_YEARS));
+
+        const deafDeposits = await prisma.deposit.findMany({
             where: {
-                tenantId: tenantId ?? undefined,
+                tenantId,
                 status: "active",
-                emiSchedule: { some: { status: "overdue", dueDate: { lt: npaThreshold } } },
+                maturityDate: { lt: alertThreshold },
             },
-            include: { member: { select: { firstName: true, lastName: true, memberNumber: true } } },
+            include: { member: { select: { firstName: true, lastName: true, memberNumber: true, phone: true } } },
         });
 
-        res.json({ success: true, npaLoans, count: npaLoans.length });
+        res.json({ success: true, count: deafDeposits.length, deposits: deafDeposits });
+    } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── GET /api/v1/jobs/overdue-suspense — Suspense entries overdue ─────────────
+router.get("/overdue-suspense", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user?.tenantId;
+        if (!tenantId) {
+            res.status(403).json({ success: false, message: "Tenant required" });
+            return;
+        }
+
+        const suspenseMaxDays = 30;
+        const threshold = new Date();
+        threshold.setDate(threshold.getDate() - suspenseMaxDays);
+
+        const entries = await prisma.suspenseEntry.findMany({
+            where: {
+                tenantId,
+                status: { in: ["OPEN", "OVERDUE"] },
+                createdAt: { lt: threshold },
+            },
+            orderBy: { createdAt: "asc" },
+        });
+
+        res.json({ success: true, count: entries.length, entries });
     } catch {
         res.status(500).json({ success: false, message: "Server error" });
     }

@@ -34,22 +34,46 @@ const dashboard_1 = __importDefault(require("./routes/dashboard"));
 const reports_1 = __importDefault(require("./routes/reports"));
 const approvals_1 = __importDefault(require("./routes/approvals"));
 const ai_1 = __importDefault(require("./routes/ai"));
+const fixed_assets_1 = __importDefault(require("./routes/fixed-assets"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
-// Security & parsing
-app.use((0, helmet_1.default)());
-app.use((0, cors_1.default)({
-    origin: [
-        process.env.FRONTEND_URL || "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],
+app.set("trust proxy", 1);
+// ✅ Filter out undefined values (e.g. if FRONTEND_URL is not set)
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "https://sahayogai-ella.vercel.app",
+].filter(Boolean);
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (mobile apps, curl, Postman)
+        if (!origin)
+            return callback(null, true);
+        if (allowedOrigins.includes(origin))
+            return callback(null, true);
+        // Allow any Vercel preview deployments
+        if (origin.endsWith(".vercel.app"))
+            return callback(null, true);
+        callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
     credentials: true,
+    optionsSuccessStatus: 200,
+};
+// ✅ Handle preflight BEFORE helmet
+app.options("/{*path}", (0, cors_1.default)(corsOptions));
+app.use((0, cors_1.default)(corsOptions));
+// ✅ Helmet AFTER cors, with crossOriginResourcePolicy relaxed
+app.use((0, helmet_1.default)({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: false,
 }));
 app.use(express_1.default.json({ limit: "10mb" }));
 app.use(express_1.default.urlencoded({ extended: true }));
-// Logging
 if (process.env.NODE_ENV !== "test") {
     app.use((0, morgan_1.default)("dev"));
 }
@@ -83,6 +107,7 @@ v1.use("/dashboard", dashboard_1.default);
 v1.use("/reports", reports_1.default);
 v1.use("/approvals", approvals_1.default);
 v1.use("/ai", ai_1.default);
+v1.use("/fixed-assets", fixed_assets_1.default);
 app.use("/api/v1", v1);
 // 404 & error handling
 app.use(error_1.notFound);

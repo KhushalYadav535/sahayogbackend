@@ -84,7 +84,19 @@ router.post("/register", async (req: Request, res: Response): Promise<void> => {
             email: z.string().email(),
             password: z.string().min(8),
             name: z.string().min(2),
-            role: z.enum(["superadmin", "admin", "staff"]).default("staff"),
+            role: z.enum([
+                "superadmin",
+                "admin",
+                "president",
+                "secretary",
+                "accountant",
+                "senior_accountant",
+                "loan_officer",
+                "compliance_officer",
+                "auditor",
+                "member",
+                "staff", // legacy alias for accountant
+            ]).default("accountant"),
             tenantId: z.string().optional(),
         });
 

@@ -61,7 +61,7 @@ router.post("/login", async (req, res) => {
     }
     catch (err) {
         if (err instanceof zod_1.z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         console.error("[Auth] Login error:", err);
@@ -76,7 +76,19 @@ router.post("/register", async (req, res) => {
             email: zod_1.z.string().email(),
             password: zod_1.z.string().min(8),
             name: zod_1.z.string().min(2),
-            role: zod_1.z.enum(["superadmin", "admin", "staff"]).default("staff"),
+            role: zod_1.z.enum([
+                "superadmin",
+                "admin",
+                "president",
+                "secretary",
+                "accountant",
+                "senior_accountant",
+                "loan_officer",
+                "compliance_officer",
+                "auditor",
+                "member",
+                "staff", // legacy alias for accountant
+            ]).default("accountant"),
             tenantId: zod_1.z.string().optional(),
         });
         const data = schema.parse(req.body);
@@ -97,7 +109,62 @@ router.post("/register", async (req, res) => {
     }
     catch (err) {
         if (err instanceof zod_1.z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+// POST /api/v1/auth/register-tenant (Public Self-Serve Registration)
+router.post("/register-tenant", async (req, res) => {
+    try {
+        const schema = zod_1.z.object({
+            societyName: zod_1.z.string().min(2),
+            adminName: zod_1.z.string().min(2),
+            email: zod_1.z.string().email(),
+            password: zod_1.z.string().min(8)
+        });
+        const data = schema.parse(req.body);
+        // Check if user already exists
+        const existingUser = await prisma_1.default.user.findUnique({ where: { email: data.email } });
+        if (existingUser) {
+            res.status(400).json({ success: false, message: "User with this email already exists" });
+            return;
+        }
+        // Generate a 4-letter + 4-digit code
+        const safeName = data.societyName.replace(/[^A-Za-z]/g, "");
+        const prefix = safeName.length >= 4 ? safeName.substring(0, 4).toUpperCase() : (safeName.toUpperCase() + "SOC1").substring(0, 4);
+        const code = prefix + Math.floor(1000 + Math.random() * 9000);
+        // Create the new Tenant
+        const tenant = await prisma_1.default.tenant.create({
+            data: {
+                name: data.societyName,
+                code: code,
+                plan: "starter",
+                status: "active"
+            }
+        });
+        const passwordHash = await bcrypt_1.default.hash(data.password, 12);
+        // Create the Admin User
+        const user = await prisma_1.default.user.create({
+            data: {
+                email: data.email,
+                name: data.adminName,
+                passwordHash,
+                role: "admin",
+                tenantId: tenant.id,
+                status: "active"
+            }
+        });
+        res.status(201).json({
+            success: true,
+            tenant: { id: tenant.id, name: tenant.name, code: tenant.code },
+            user: { id: user.id, email: user.email, name: user.name, role: user.role }
+        });
+    }
+    catch (err) {
+        if (err instanceof zod_1.z.ZodError) {
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         res.status(500).json({ success: false, message: "Server error" });

@@ -7,26 +7,62 @@ const express_1 = require("express");
 const zod_1 = require("zod");
 const prisma_1 = __importDefault(require("../../db/prisma"));
 const auth_1 = require("../middleware/auth");
+const audit_1 = require("../../db/audit");
+const gl_posting_1 = require("../../lib/gl-posting");
 const router = (0, express_1.Router)();
 // POST /api/v1/sb/accounts — Open SB account
 router.post("/accounts", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { memberId, accountType, interestRate } = zod_1.z.object({
+        const userId = req.user.id;
+        const { memberId, openingDeposit, interestRate, operationMode, nominee } = zod_1.z.object({
             memberId: zod_1.z.string(),
-            accountType: zod_1.z.enum(["savings", "current", "fd", "rd"]).default("savings"),
-            interestRate: zod_1.z.number().optional().default(3.5),
+            openingDeposit: zod_1.z.number().min(500, "Opening deposit must be at least ₹500"),
+            interestRate: zod_1.z.number().optional().default(4.0),
+            operationMode: zod_1.z.string().optional().default("SINGLE"),
+            nominee: zod_1.z.string().optional(),
         }).parse(req.body);
+        // Verify member belongs to this tenant
+        const member = await prisma_1.default.member.findFirst({ where: { id: memberId, tenantId } });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
         const count = await prisma_1.default.sbAccount.count({ where: { tenantId } });
-        const accountNumber = `SB${String(count + 1).padStart(8, "0")}`;
-        const account = await prisma_1.default.sbAccount.create({
-            data: { tenantId, memberId, accountNumber, accountType, interestRate, balance: 0 },
+        const year = new Date().getFullYear();
+        const accountNumber = `SB-${year}-${String(count + 1).padStart(6, "0")}`;
+        const account = await prisma_1.default.$transaction(async (tx) => {
+            const created = await tx.sbAccount.create({
+                data: {
+                    tenantId,
+                    memberId,
+                    accountNumber,
+                    accountType: "savings",
+                    interestRate,
+                    balance: openingDeposit,
+                    ...(operationMode && { operationMode }),
+                    ...(nominee && { nominee }),
+                },
+            });
+            // Record opening deposit as a transaction
+            await tx.transaction.create({
+                data: {
+                    accountId: created.id,
+                    type: "credit",
+                    category: "opening_deposit",
+                    amount: openingDeposit,
+                    balanceAfter: openingDeposit,
+                    remarks: "Account opening deposit",
+                },
+            });
+            return created;
         });
+        await (0, audit_1.createAuditLog)({ userId, tenantId, action: "SB_ACCOUNT_OPEN", resource: "sbAccount", resourceId: account.id, newData: { accountNumber, memberId, openingDeposit } });
         res.status(201).json({ success: true, account });
     }
     catch (err) {
         if (err instanceof zod_1.z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, message: err.errors[0]?.message || "Validation error", errors: err.errors });
             return;
         }
         res.status(500).json({ success: false, message: "Server error" });
@@ -118,11 +154,26 @@ router.post("/accounts/:id/withdraw", auth_1.authMiddleware, auth_1.requireTenan
             res.status(404).json({ success: false, message: "Account not found" });
             return;
         }
+        // COA: Block withdrawal if account is dormant
+        if (account.status === "dormant") {
+            res.status(400).json({
+                success: false,
+                message: "Withdrawal blocked — account is dormant. Please complete KYC refresh to reactivate first.",
+                accountStatus: "dormant",
+                kycRefreshRequired: account.kycRefreshRequired,
+            });
+            return;
+        }
+        if (account.status !== "active") {
+            res.status(400).json({ success: false, message: `Withdrawal not allowed in status: ${account.status}` });
+            return;
+        }
         if (Number(account.balance) < amount) {
             res.status(400).json({ success: false, message: "Insufficient balance" });
             return;
         }
         const newBalance = Number(account.balance) - amount;
+        const period = (0, gl_posting_1.currentPeriod)();
         const [updatedAccount, tx] = await prisma_1.default.$transaction([
             prisma_1.default.sbAccount.update({ where: { id: req.params.id }, data: { balance: newBalance, lastActivityAt: new Date() } }),
             prisma_1.default.transaction.create({
@@ -136,6 +187,8 @@ router.post("/accounts/:id/withdraw", auth_1.authMiddleware, auth_1.requireTenan
                 },
             }),
         ]);
+        // COA: GL posting for withdrawal
+        await (0, gl_posting_1.postGl)(req.user.tenantId, "SB_WITHDRAWAL", amount, `SB withdrawal — ${account.accountNumber}`, period);
         res.json({ success: true, account: updatedAccount, transaction: tx });
     }
     catch {
@@ -192,6 +245,44 @@ router.get("/accounts/:id/passbook", auth_1.authMiddleware, auth_1.requireTenant
             prisma_1.default.transaction.count({ where: { accountId: req.params.id } }),
         ]);
         res.json({ success: true, transactions, total });
+    }
+    catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+// POST /api/v1/sb/accounts/:id/reactivate — Reactivate dormant account after KYC refresh
+router.post("/accounts/:id/reactivate", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const account = await prisma_1.default.sbAccount.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!account) {
+            res.status(404).json({ success: false, message: "Account not found" });
+            return;
+        }
+        if (account.status !== "dormant") {
+            res.status(400).json({ success: false, message: "Account is not dormant" });
+            return;
+        }
+        await prisma_1.default.sbAccount.update({
+            where: { id: account.id },
+            data: {
+                status: "active",
+                kycRefreshRequired: false,
+                lastActivityAt: new Date(),
+            },
+        });
+        await (0, audit_1.createAuditLog)({
+            tenantId,
+            userId: req.user?.userId,
+            action: "SB_ACCOUNT_REACTIVATED",
+            entity: "SbAccount",
+            entityId: account.id,
+        });
+        res.json({
+            success: true,
+            message: "Account reactivated. KYC refresh recorded.",
+            accountNumber: account.accountNumber,
+        });
     }
     catch {
         res.status(500).json({ success: false, message: "Server error" });

@@ -38,7 +38,11 @@ router.patch("/:id", auth_1.authMiddleware, auth_1.requireTenant, async (req, re
             res.status(400).json({ success: false, message: "role required" });
             return;
         }
-        const allowed = ["admin", "staff", "superadmin"];
+        const allowed = [
+            "superadmin", "admin", "president", "secretary",
+            "accountant", "senior_accountant", "loan_officer",
+            "compliance_officer", "auditor", "member", "staff",
+        ];
         if (!allowed.includes(role)) {
             res.status(400).json({ success: false, message: "Invalid role" });
             return;

@@ -231,19 +231,22 @@ model Nominee {
 // ─────────────────────────────────────────────
 
 model SbAccount {
-  id              String   @id @default(cuid())
-  tenantId        String
-  memberId        String
-  accountNumber   String
-  accountType     String   @default("savings") // savings | current | fd | rd
-  balance         Decimal  @db.Decimal(15,2) @default(0)
-  interestRate    Decimal  @db.Decimal(5,2)  @default(3.5)
-  status          String   @default("active") // active | dormant | closed
-  lastActivityAt  DateTime? @default(now()) // SB-005 dormancy
-  openedAt        DateTime @default(now())
-  closedAt        DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  tenantId           String
+  memberId           String
+  accountNumber      String
+  accountType        String   @default("savings") // savings | current | fd | rd
+  balance            Decimal  @db.Decimal(15,2) @default(0)
+  interestRate       Decimal  @db.Decimal(5,2)  @default(3.5)
+  operationMode      String   @default("SINGLE") // SINGLE | EITHER_OR_SURVIVOR | JOINTLY
+  nominee            String?
+  status             String   @default("active") // active | dormant | closed
+  lastActivityAt     DateTime? @default(now()) // SB-005 dormancy
+  kycRefreshRequired Boolean  @default(false)  // COA: required for dormancy reactivation
+  openedAt           DateTime @default(now())
+  closedAt           DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   member          Member       @relation(fields: [memberId], references: [id])
@@ -287,11 +290,18 @@ model Deposit {
   maturityDate    DateTime?
   maturityAmount  Decimal? @db.Decimal(15,2)  // calculated at maturity
   rdMonthlyAmount Decimal? @db.Decimal(15,2)  // RD installment
-  status          String   @default("active")  // active | matured | prematurely_closed
+  status          String   @default("active")  // active | matured | prematurely_closed | lien_marked | dormant | unclaimed
   openedAt        DateTime @default(now())
   closedAt        DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  // CoA fields
+  isSeniorCitizen   Boolean  @default(false)   // COA: auto-detected from member DOB (age >= 60)
+  lienLoanId        String?                     // COA: DEP-010 — FDR lien for Loan Against Deposit
+  tdsDeducted       Decimal? @db.Decimal(15,2)  // COA: cumulative TDS deducted on this deposit
+  tdsApplicable     Boolean  @default(false)    // COA: whether TDS applies this FY
+  form15Exempt      Boolean  @default(false)    // COA: Form 15G/H submitted
+  accruedInterest   Decimal  @db.Decimal(15,2) @default(0) // running accrued interest
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   member          Member   @relation(fields: [memberId], references: [id])
@@ -346,13 +356,23 @@ model Loan {
   disbursedAt     DateTime?
   outstandingPrincipal Decimal @db.Decimal(15,2) @default(0)
   outstandingInterest  Decimal @db.Decimal(15,2) @default(0)
-  outstandingPenal      Decimal @db.Decimal(15,2) @default(0) // LN-006
+  outstandingPenal     Decimal @db.Decimal(15,2) @default(0) // LN-006
   status          String   @default("active") // active | closed | npa | written-off
-  npaCategory     String?  // LN-011: standard | sma | sub_standard | doubtful_1 | doubtful_2 | doubtful_3 | loss
+  npaCategory     String?  // LN-011: standard | sma_0 | sma_1 | sub_standard | doubtful_1 | doubtful_2 | doubtful_3 | loss
+  npaDpd          Int?     // COA: days past due for oldest overdue EMI
+  npaProvision    Decimal? @db.Decimal(15,2) // COA: provisioned amount
   npaDate         DateTime?
   writeOffDate    DateTime?
   writeOffAmount  Decimal? @db.Decimal(15,2)
   recoveredAmount Decimal? @db.Decimal(15,2) @default(0)
+  // CoA fields
+  loanSubType     String?  // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
+  glCode          String?  // COA: assigned at disbursement from LOAN_GL_CODES
+  subventionRate  Decimal? @db.Decimal(5,4) // COA: KCC 3% subvention
+  goldValue       Decimal? @db.Decimal(15,2) // COA: appraised gold value (for gold loans)
+  collateralFdrId String?  // COA: FDR ID used as collateral (for LAD)
+  householdIncome Decimal? @db.Decimal(15,2) // COA: declared income for microfinance cap
+  bodResolutionRef String? // COA: BOD resolution reference required for write-off
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -632,6 +652,29 @@ model SuspenseEntry {
 
   @@unique([tenantId, suspenseNumber])
   @@map("suspense_entries")
+}
+
+// ─────────────────────────────────────────────
+// FIXED ASSETS (CoA Rules — Schedule H)
+// ─────────────────────────────────────────────
+
+model FixedAsset {
+  id                    String   @id @default(cuid())
+  tenantId              String
+  name                  String
+  assetClass            String   // BUILDING | FURNITURE | COMPUTER | VEHICLE | EQUIPMENT
+  purchaseDate          DateTime
+  cost                  Decimal  @db.Decimal(15,2)
+  depreciationMethod    String   @default("SLM") // SLM | WDV
+  depreciationRate      Decimal  @db.Decimal(6,4) // e.g. 0.0500 for 5%
+  accumulatedDepreciation Decimal @db.Decimal(15,2) @default(0)
+  netBookValue          Decimal  @db.Decimal(15,2)
+  disposedAt            DateTime?
+  disposalProceeds      Decimal? @db.Decimal(15,2)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("fixed_assets")
 }
 
 // ─────────────────────────────────────────────

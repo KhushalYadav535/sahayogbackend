@@ -31,6 +31,7 @@ import dashboardRoutes from "./routes/dashboard";
 import reportsRoutes from "./routes/reports";
 import approvalsRoutes from "./routes/approvals";
 import aiRoutes from "./routes/ai";
+import fixedAssetsRoutes from "./routes/fixed-assets";
 
 dotenv.config();
 
@@ -67,7 +68,7 @@ const corsOptions: cors.CorsOptions = {
 };
 
 // ✅ Handle preflight BEFORE helmet
-app.options("*", cors(corsOptions));
+app.options("/{*path}", cors(corsOptions));
 app.use(cors(corsOptions));
 
 // ✅ Helmet AFTER cors, with crossOriginResourcePolicy relaxed
@@ -117,6 +118,7 @@ v1.use("/dashboard", dashboardRoutes);
 v1.use("/reports", reportsRoutes);
 v1.use("/approvals", approvalsRoutes);
 v1.use("/ai", aiRoutes);
+v1.use("/fixed-assets", fixedAssetsRoutes);
 
 app.use("/api/v1", v1);
 

@@ -33,7 +33,11 @@ router.patch("/:id", authMiddleware, requireTenant, async (req: AuthRequest, res
         const { id } = req.params;
         const { role } = req.body as { role?: string };
         if (!role) { res.status(400).json({ success: false, message: "role required" }); return; }
-        const allowed = ["admin", "staff", "superadmin"];
+        const allowed = [
+            "superadmin", "admin", "president", "secretary",
+            "accountant", "senior_accountant", "loan_officer",
+            "compliance_officer", "auditor", "member", "staff",
+        ];
         if (!allowed.includes(role)) { res.status(400).json({ success: false, message: "Invalid role" }); return; }
 
         const user = await prisma.user.findFirst({ where: { id, tenantId } });
