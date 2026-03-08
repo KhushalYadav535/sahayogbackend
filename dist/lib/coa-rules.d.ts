@@ -47,6 +47,24 @@ export declare const DORMANCY_MONTHS = 24;
 export declare const DEAF_TRIGGER_YEARS = 10;
 /** Years before DEAF alert (preemptive tracking) */
 export declare const DEAF_ALERT_YEARS = 9.5;
+/** SB balance threshold above which excess is swept to FDR */
+export declare const SWEEP_IN_THRESHOLD = 10000;
+/** SB balance threshold below which FDR is broken to top up */
+export declare const SWEEP_OUT_THRESHOLD = 2000;
+/** Sweep FDR tenure (short-term for sweep-in) */
+export declare const SWEEP_FDR_TENURE_MONTHS = 1;
+export interface PrematurePenaltyTier {
+    holdingPeriodMonthsMax: number;
+    penaltyPct: number;
+}
+/** Premature withdrawal penalty matrix (metadata-driven) */
+export declare const PREMATURE_PENALTY_MATRIX: PrematurePenaltyTier[];
+/**
+ * Get penalty rate for premature withdrawal based on holding period
+ * @param holdingMonths - Number of months the deposit was held
+ * @returns Penalty percentage (e.g., 2.0 for 2%)
+ */
+export declare function getPrematurePenaltyRate(holdingMonths: number): number;
 /** Maximum LTV ratio for Gold Loans (75%) */
 export declare const GOLD_LOAN_MAX_LTV = 0.75;
 /** Margin call trigger if gold value drops by > 5% */

@@ -37,17 +37,29 @@ model Tenant {
   config       SystemConfig[]
   configVersions TenantConfigVersion[]
   users        User[]
+  permissionMatrix PermissionMatrix[]
   deposits     Deposit[]
   bodDirectors BodDirector[]
   committees   Committee[]
   agms         Agm[]
   resolutions  Resolution[]
   complianceEvents ComplianceEvent[]
+  bylaws       Bylaw[]
+  meetingMinutes MeetingMinutes[]
+  approvalOverrides ApprovalOverride[]
+  approvalThresholds ApprovalThreshold[]
+  groupLoans       GroupLoan[] // LN-023
   billingOverride  TenantBilling?
   credits         TenantCredits?
   usageSnapshots  TenantUsageSnapshot[]
   suspenseEntries SuspenseEntry[]
   bankStatementUploads BankStatementUpload[]
+  paymentRequests PaymentRequest[]
+  notificationLogs NotificationLog[]
+
+  // ACC-006: Month-End Closing
+  closedPeriods String[] @default([]) // Array of closed periods (YYYY-MM format)
+  closedFys     String[] @default([]) // Array of closed financial years
 
   @@map("tenants")
 }
@@ -136,11 +148,27 @@ model User {
   name         String
   role         String   @default("staff") // superadmin | admin | staff | member
   status       String   @default("active")
+  // RSK-005: Password Rotation
+  passwordChangedAt DateTime @default(now())
+  passwordExpiresAt DateTime?
+  passwordForceExpire Boolean @default(false)
+  // SEC-002: Multi-Factor Authentication
+  mfaEnabled Boolean @default(false)
+  mfaMethod String? // TOTP | SMS
+  totpSecret String? // Base32 encoded secret for TOTP
+  totpBackupCodes String[] @default([]) // Backup codes for TOTP
+  mfaVerifiedAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   tenant       Tenant?  @relation(fields: [tenantId], references: [id])
   auditLogs    AuditLog[]
+  sessions     Session[]
+  passwordHistory PasswordHistory[]
+  dataMaskingLogs DataMaskingLog[]
+  mfaLogs      MfaLog[]
+  roleAssignments RoleAssignmentLog[] @relation("RoleAssigner")
+  roleAssignmentLogs RoleAssignmentLog[]
 
   @@map("users")
 }
@@ -178,6 +206,12 @@ model Member {
   isMinor        Boolean  @default(false)
   guardianName   String?
   majorityDate   DateTime?
+  // MEM-012: Joint Membership
+  jointMemberId String?  // Link to joint holder member
+  jointMode     String?  // EITHER_OR_SURVIVOR | JOINTLY
+  // MEM-014: KYC Re-validation
+  kycLastValidatedAt DateTime?  // Last KYC validation date
+  kycNextValidationDue DateTime?  // Next validation due date
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -188,6 +222,16 @@ model Member {
   loans          Loan[]
   loanApplications LoanApplication[]
   deposits       Deposit[]
+  jointMember    Member?  @relation("JointMembers", fields: [jointMemberId], references: [id])
+  jointMembers   Member[] @relation("JointMembers")
+  groupLoanMembers GroupLoanMember[]
+  amlAlerts       AmlAlert[]
+  dataAccessRequests DataAccessRequest[]
+  dataCorrectionRequests DataCorrectionRequest[]
+  dataErasureRequests DataErasureRequest[]
+  consentRecords ConsentRecord[]
+  nachMandates NachMandate[]
+  notificationLogs NotificationLog[]
 
   @@unique([tenantId, memberNumber])
   @@map("members")
@@ -320,6 +364,7 @@ model LoanApplication {
   memberId        String
   guarantorMemberId String? // LN-014 guarantor (if existing member)
   loanType        String   // personal | agricultural | business | housing | education | gold
+  loanSubType     String?  // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
   amountRequested Decimal  @db.Decimal(15,2)
   purpose         String?
   tenureMonths    Int
@@ -336,8 +381,49 @@ model LoanApplication {
 
   member          Member   @relation(fields: [memberId], references: [id])
   loan            Loan?
+  // LN-023: Group Loan/JLG
+  groupLoanId     String? // Link to GroupLoan if part of JLG application
 
   @@map("loan_applications")
+}
+
+// ─── LN-023: Group Loan / JLG (Joint Liability Group) ──────────────────────────
+model GroupLoan {
+  id              String   @id @default(cuid())
+  tenantId        String
+  groupName       String
+  groupCode       String   // Unique group identifier
+  groupType       String   @default("JLG") // JLG | SHG | OTHER
+  totalLoanAmount Decimal  @db.Decimal(15,2)
+  status          String   @default("active") // active | closed | npa
+  formedDate      DateTime @default(now())
+  closedDate      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  members         GroupLoanMember[]
+  loans           Loan[]
+
+  @@unique([tenantId, groupCode])
+  @@map("group_loans")
+}
+
+model GroupLoanMember {
+  id              String   @id @default(cuid())
+  groupLoanId     String
+  memberId        String
+  individualLoanAmount Decimal @db.Decimal(15,2)
+  role            String?  // LEADER | MEMBER
+  isActive        Boolean  @default(true)
+  joinedAt        DateTime @default(now())
+  exitedAt        DateTime?
+
+  groupLoan       GroupLoan @relation(fields: [groupLoanId], references: [id])
+  member          Member    @relation(fields: [memberId], references: [id])
+
+  @@unique([groupLoanId, memberId])
+  @@map("group_loan_members")
 }
 
 model Loan {
@@ -373,6 +459,28 @@ model Loan {
   collateralFdrId String?  // COA: FDR ID used as collateral (for LAD)
   householdIncome Decimal? @db.Decimal(15,2) // COA: declared income for microfinance cap
   bodResolutionRef String? // COA: BOD resolution reference required for write-off
+  // LN-010: Restructuring/Refinance
+  restructureCount Int @default(0) // Track number of restructures
+  restructuredFromLoanId String? // Link to original loan if refinanced
+  refinancedToLoanId String? // Link to new loan if this was refinanced
+  isRestructured Boolean @default(false) // Regulatory flag for NABARD reporting
+  // LN-005: Moratorium tracking
+  moratoriumEndDate DateTime? // End date of moratorium period
+  // LN-014: Guarantor
+  guarantorMemberId String? // Member ID if guarantor is existing member
+  guarantorName String? // External guarantor name
+  guarantorIncome Decimal? @db.Decimal(15,2) // Guarantor income/networth
+  guaranteeAmount Decimal? @db.Decimal(15,2) // Guarantee amount
+  guaranteeStartDate DateTime? // Guarantee start date
+  // LN-023: Group Loan/JLG
+  groupLoanId String? // Link to GroupLoan if part of JLG
+  // LN-024: CIBIL/Experian
+  cibilScore Decimal? @db.Decimal(5,2) // CIBIL credit score
+  cibilReportDate DateTime? // Date when CIBIL report was fetched
+  cibilReportId String? // CIBIL report reference ID
+  experianScore Decimal? @db.Decimal(5,2) // Experian credit score
+  experianReportDate DateTime? // Date when Experian report was fetched
+  experianReportId String? // Experian report reference ID
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -380,6 +488,9 @@ model Loan {
   member          Member          @relation(fields: [memberId], references: [id])
   application     LoanApplication @relation(fields: [applicationId], references: [id])
   emiSchedule     EmiSchedule[]
+  restructuredFrom Loan? @relation("LoanRestructuring", fields: [restructuredFromLoanId], references: [id])
+  refinancedTo Loan[] @relation("LoanRestructuring")
+  groupLoan       GroupLoan? @relation(fields: [groupLoanId], references: [id])
 
   @@unique([tenantId, loanNumber])
   @@map("loans")
@@ -448,7 +559,7 @@ model Voucher {
   id            String   @id @default(cuid())
   tenantId      String
   voucherNumber String
-  voucherType   String   // JV | RV | PV | BV (Journal/Receipt/Payment/Bank)
+  voucherType   String   // JV | RV | PV | BV | AUDIT_ADJ (Journal/Receipt/Payment/Bank/Audit Adjustment)
   date          DateTime
   narration     String?
   totalAmount   Decimal  @db.Decimal(15,2)
@@ -457,6 +568,10 @@ model Voucher {
   checkerUserId String?
   approvedAt    DateTime?
   reversalOf    String?
+  // ACC-010: Audit Adjustment Entries
+  isAuditAdjustment Boolean @default(false) // Tagged as AUDIT_ADJ
+  auditAccessStartDate DateTime? // Time-limited access start
+  auditAccessEndDate DateTime? // Time-limited access end
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -500,9 +615,36 @@ model AiAuditLog {
   latencyMs   Int?
   success     Boolean  @default(true)
   errorMsg    String?
+  // AI-014: Explainable AI
+  explanationText String? // Human-readable explanation
+  modelVersion String? @default("v1.0")
+  // AI-016: Human Override
+  humanOverrideFlag Boolean @default(false)
+  overrideReason String?
+  overrideReasonCode String? // From exception.override.reason.codes metadata
   createdAt   DateTime @default(now())
 
   @@map("ai_audit_log")
+}
+
+// AI-015: AI Model Versioning & Rollback
+model AiModel {
+  id                String   @id @default(cuid())
+  modelId           String   // loan_risk_scoring | fraud_scoring | etc
+  version           String   // v1.0 | v1.1 | etc
+  algorithm         String   // XGBoost | LightGBM | IsolationForest | etc
+  trainingDate      DateTime
+  trainingDataRange String?  // "2024-01-01 to 2024-12-31"
+  performanceMetrics Json?   // { f1: 0.85, auc: 0.92 }
+  deployedBy        String?
+  deployedAt        DateTime @default(now())
+  isActive          Boolean  @default(true)
+  rollbackTo        String?  // Previous version ID if rolled back
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([modelId, version])
+  @@map("ai_models")
 }
 
 // ─────────────────────────────────────────────
@@ -552,14 +694,18 @@ model Agm {
   fiscalYear    String   // 2024-25
   scheduledDate DateTime
   noticeDate    DateTime?
-  agendaItems   Json?    // string[]
+  noticeSentAt  DateTime?
+  venue         String?
+  agendaItems   Json?    // [{id, title, description, order}]
+  attendance    Json?    // [{memberId, memberName, present: boolean}]
   minutesDoc    String?
-  status        String   @default("scheduled") // scheduled | conducted | minutes_approved
+  status        String   @default("scheduled") // scheduled | notice_sent | conducted | minutes_approved
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   tenant        Tenant   @relation(fields: [tenantId], references: [id])
   resolutions   Resolution[]
+  meetingMinutes MeetingMinutes[]
 
   @@map("agms")
 }
@@ -600,6 +746,94 @@ model ComplianceEvent {
   tenant        Tenant   @relation(fields: [tenantId], references: [id])
 
   @@map("compliance_events")
+}
+
+// ─── GOV-006: By-law Repository ───────────────────────────────────────────────
+model Bylaw {
+  id            String   @id @default(cuid())
+  tenantId      String
+  version       Int      @default(1)
+  title         String
+  documentPath  String
+  resolutionRef String?  // BOD resolution reference for amendments
+  effectiveDate DateTime @default(now())
+  status        String   @default("active") // active | superseded
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("bylaws")
+}
+
+// ─── GOV-007: Meeting Minutes & Action Items ──────────────────────────────────
+model MeetingMinutes {
+  id            String   @id @default(cuid())
+  tenantId      String
+  meetingType   String   // BOARD | AGM | COMMITTEE
+  meetingId     String   // AGM ID or Committee ID
+  meetingDate   DateTime
+  minutesType   String   @default("DRAFT") // DRAFT | FINALIZED
+  attendees     Json     // [{memberId, name, role, present}]
+  agenda        Json     // [{id, title, description, decisions}]
+  decisions     Json?    // string[]
+  actionItems   Json?    // [{id, description, responsible, dueDate, status}]
+  attachments   Json?    // [{fileName, fileUrl}]
+  sha256Hash    String?  // GOV-015: For tamper detection
+  digitallySigned Boolean @default(false)
+  signedAt      DateTime?
+  signedBy      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String?
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  agm           Agm?     @relation(fields: [meetingId], references: [id])
+
+  @@map("meeting_minutes")
+}
+
+// ─── GOV-010: Exception Override Tracking ──────────────────────────────────────
+model ApprovalOverride {
+  id                String   @id @default(cuid())
+  tenantId          String
+  overrideId        String   // Unique override reference
+  ruleBypassed      String   // Which approval rule was bypassed
+  originalApprover  String   // Who should have approved
+  overrideAuthorizer String   // Who authorized the override
+  reasonCode        String   // From exception.override.reason.codes metadata
+  reasonDescription String?
+  transactionType   String   // LOAN | GL_ENTRY | REFUND | MEMBER_STATUS | DEPOSIT
+  transactionId     String?
+  amount            Decimal? @db.Decimal(15,2)
+  createdAt         DateTime @default(now())
+  createdBy         String?
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, overrideId])
+  @@map("approval_overrides")
+}
+
+// ─── GOV-008: Maker-Checker Configuration (Metadata) ──────────────────────────
+model ApprovalThreshold {
+  id              String   @id @default(cuid())
+  tenantId        String
+  transactionType String   // LOAN | GL_ENTRY | REFUND | MEMBER_STATUS | DEPOSIT
+  level           Int      // 1-4
+  maxAmount       Decimal? @db.Decimal(15,2)
+  approverRole    String   // LOAN_OFFICER | LOAN_COMMITTEE | PRESIDENT | SECRETARY
+  slaHours        Int      @default(24) // SLA in hours
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, transactionType, level])
+  @@map("approval_thresholds")
 }
 
 // ─────────────────────────────────────────────
@@ -713,4 +947,386 @@ model BankStatementEntry {
   upload           BankStatementUpload @relation(fields: [uploadId], references: [id])
 
   @@map("bank_statement_entries")
+}
+
+// ─────────────────────────────────────────────
+// MODULE 8 — RISK & CONTROLS
+// ─────────────────────────────────────────────
+
+// RSK-003: Concurrent Session Control
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  tenantId    String?
+  token        String   @unique
+  ipAddress    String?
+  userAgent    String?
+  lastActivityAt DateTime @default(now())
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+// RSK-005: Password History & Rotation
+model PasswordHistory {
+  id           String   @id @default(cuid())
+  userId       String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("password_history")
+}
+
+// RSK-001: Transaction Velocity Tracking
+model TransactionVelocity {
+  id            String   @id @default(cuid())
+  tenantId      String
+  accountId     String
+  transactionType String
+  amount        Decimal  @db.Decimal(15,2)
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, accountId, transactionType, createdAt])
+  @@map("transaction_velocity")
+}
+
+// RSK-002: Daily Transaction Limits Tracking
+model DailyLimit {
+  id            String   @id @default(cuid())
+  tenantId      String
+  userId        String?
+  accountId     String?
+  limitType     String   // USER_CASH | ACCOUNT_CASH
+  date          DateTime @db.Date
+  amountUsed    Decimal  @db.Decimal(15,2) @default(0)
+  limitAmount   Decimal  @db.Decimal(15,2)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([tenantId, userId, accountId, limitType, date])
+  @@index([tenantId, date])
+  @@map("daily_limits")
+}
+
+// RSK-006: Data Masking Unmask Log
+model DataMaskingLog {
+  id            String   @id @default(cuid())
+  tenantId      String
+  userId        String
+  field         String   // aadhaar | pan | bank_account | mobile
+  entityType    String   // Member | User | Account
+  entityId      String
+  purpose       String?
+  createdAt     DateTime @default(now())
+
+  user          User     @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, userId])
+  @@map("data_masking_logs")
+}
+
+// RSK-007: Backup Verification Log
+model BackupVerification {
+  id            String   @id @default(cuid())
+  tenantId      String?
+  backupDate    DateTime @db.Date
+  verificationDate DateTime @default(now())
+  status        String   // SUCCESS | FAILED
+  rowCountLive  Int?
+  rowCountBackup Int?
+  errorMessage  String?
+  verifiedBy    String?  // System or user ID
+  createdAt     DateTime @default(now())
+
+  @@unique([backupDate])
+  @@index([status])
+  @@map("backup_verifications")
+}
+
+// RSK-010: Audit Log Hash Chain (for immutability verification)
+model AuditLogHash {
+  id            String   @id @default(cuid())
+  auditLogId    String   @unique
+  hash          String   // SHA-256 hash of audit log entry + previous hash
+  previousHash  String?  // Hash of previous audit log entry
+  createdAt     DateTime @default(now())
+
+  @@index([hash])
+  @@map("audit_log_hashes")
+}
+
+// RSK-011: Data Retention Policy Tracking
+model DataRetention {
+  id            String   @id @default(cuid())
+  tenantId      String?
+  dataCategory  String   // TRANSACTION | AUDIT_LOG | KYC_AML | AI_DECISION | MEMBER | COMMUNICATION
+  recordId      String
+  retentionUntil DateTime
+  archivedAt    DateTime?
+  purgedAt      DateTime?
+  status        String   @default("ACTIVE") // ACTIVE | ARCHIVED | PURGED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId, dataCategory, status])
+  @@index([retentionUntil])
+  @@map("data_retention")
+}
+
+// RSK-012: AML Transaction Alerts
+model AmlAlert {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String?
+  transactionId String?
+  alertType     String   // CTR | STRUCTURING | PEP | UNUSUAL_PATTERN
+  ruleId        String?
+  amount        Decimal  @db.Decimal(15,2)
+  description   String
+  status        String   @default("PENDING") // PENDING | REVIEWED | DISMISSED | STR_GENERATED
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  strGenerated  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member        Member?  @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([memberId])
+  @@map("aml_alerts")
+}
+
+// ─────────────────────────────────────────────
+// MODULE 9 — SECURITY & RBAC
+// ─────────────────────────────────────────────
+
+// SEC-001: Permission Matrix (metadata-driven RBAC)
+model PermissionMatrix {
+  id            String   @id @default(cuid())
+  tenantId      String
+  role          String   // secretary | accountant | loan_officer | auditor | member
+  permissions   String[] // Array of permission strings (e.g., ["member:create", "gl:entry_create"])
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, role])
+  @@index([tenantId])
+  @@map("permission_matrix")
+}
+
+// SEC-001: Role Assignment Log
+model RoleAssignmentLog {
+  id            String   @id @default(cuid())
+  tenantId      String?
+  userId        String
+  assignedRole  String
+  assignedBy    String
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  user          User     @relation(fields: [userId], references: [id])
+  assigner     User     @relation("RoleAssigner", fields: [assignedBy], references: [id])
+
+  @@index([tenantId, userId])
+  @@map("role_assignment_logs")
+}
+
+// SEC-002: MFA Setup & Verification Log
+model MfaLog {
+  id            String   @id @default(cuid())
+  userId        String
+  tenantId      String?
+  action        String   // SETUP | VERIFY | DISABLE | BACKUP_CODE_USED
+  method        String   // TOTP | SMS
+  success       Boolean  @default(true)
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  user          User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("mfa_logs")
+}
+
+// SEC-005: DPDP Act 2023 - Data Access Request
+model DataAccessRequest {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String
+  requestType   String   // ACCESS | CORRECTION | ERASURE
+  status        String   @default("PENDING") // PENDING | IN_PROGRESS | FULFILLED | REJECTED
+  requestedAt   DateTime @default(now())
+  fulfilledAt  DateTime?
+  fulfilledBy  String?
+  responseData  Json?    // Data provided in response
+  rejectionReason String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId, memberId])
+  @@index([status])
+  @@map("data_access_requests")
+}
+
+// SEC-005: DPDP Act 2023 - Data Correction Request
+model DataCorrectionRequest {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String
+  field         String   // Field name to correct
+  oldValue      String?
+  newValue      String
+  reason        String?
+  status        String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  requestedAt   DateTime @default(now())
+  processedAt   DateTime?
+  processedBy   String?
+  auditTrail    Json?    // Full audit trail of changes
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId, memberId])
+  @@map("data_correction_requests")
+}
+
+// SEC-005: DPDP Act 2023 - Data Erasure Request
+model DataErasureRequest {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String
+  erasureType   String   // FULL | PARTIAL | ANONYMIZE
+  reason        String?
+  status        String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | REJECTED
+  requestedAt   DateTime @default(now())
+  processedAt   DateTime?
+  processedBy   String?
+  anonymizedFields String[] // Fields that were anonymized (not deleted)
+  deletedFields String[]    // Fields that were deleted
+  retentionFields String[]  // Fields retained for legal compliance
+  erasureLog    Json?    // Complete erasure log
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId, memberId])
+  @@map("data_erasure_requests")
+}
+
+// SEC-005: DPDP Act 2023 - Consent Management
+model ConsentRecord {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String
+  purpose       String   // DATA_PROCESSING | MARKETING | SHARING | etc.
+  consentGiven  Boolean  @default(false)
+  consentDate   DateTime?
+  withdrawalDate DateTime?
+  method        String?  // ONLINE | OFFLINE | VERBAL
+  ipAddress     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@unique([tenantId, memberId, purpose])
+  @@index([tenantId, memberId])
+  @@map("consent_records")
+}
+
+// Module 11 — Third-Party Integrations
+
+// INT-002, INT-011: Payment Requests (UPI, Payment Gateway)
+model PaymentRequest {
+  id            String   @id @default(cuid())
+  tenantId      String
+  orderId       String   @unique
+  amount        Decimal
+  purpose       String
+  transactionId String?
+  status        String   @default("PENDING") // PENDING | COMPLETED | FAILED | CANCELLED
+  paymentMethod String   // UPI | RAZORPAY | PAYU
+  paymentId     String?
+  referenceId   String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, orderId])
+  @@index([transactionId])
+  @@map("payment_requests")
+}
+
+// INT-003: NACH Auto-Debit Mandates
+model NachMandate {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String
+  mandateId     String   @unique
+  bankAccount   String
+  amount        Decimal
+  frequency     String   // MONTHLY | QUARTERLY | YEARLY
+  startDate     DateTime
+  endDate       DateTime?
+  status        String   @default("PENDING") // PENDING | ACTIVE | REJECTED | CANCELLED | EXPIRED
+  umrn          String?  // Unique Mandate Reference Number
+  registeredAt  DateTime?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member        Member   @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId, memberId])
+  @@index([mandateId])
+  @@map("nach_mandates")
+}
+
+// INT-005: SMS/Notification Logs
+model NotificationLog {
+  id            String   @id @default(cuid())
+  tenantId      String
+  memberId      String?
+  type          String   // SMS | EMAIL | PUSH | WHATSAPP
+  recipient     String
+  templateId    String?
+  status        String   @default("PENDING") // PENDING | SENT | DELIVERED | FAILED
+  messageId     String?
+  subject       String?
+  body          String?
+  metadata      Json?
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  errorCode     String?
+  errorMessage  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  member        Member?  @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId, memberId])
+  @@index([messageId])
+  @@index([status])
+  @@map("notification_logs")
 }

@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import prisma from "../../db/prisma";
 import { authMiddleware, requireTenant, AuthRequest } from "../middleware/auth";
+import { currentPeriod } from "../../lib/gl-posting";
 
 const router = Router();
 
@@ -112,12 +113,37 @@ router.post("/coa", authMiddleware, requireTenant, async (req: AuthRequest, res:
     }
 });
 
+// AI-005: Auto-Ledger Classification Helper
+async function suggestGlCode(narration: string, tenantId: string): Promise<{ glCode: string; glName: string; confidence: number } | null> {
+    const narrationLower = narration.toLowerCase();
+    
+    // Simple keyword-based classification (can be enhanced with NLP)
+    const patterns: Array<{ keywords: string[]; glCode: string; glName: string }> = [
+        { keywords: ["salary", "wages", "staff"], glCode: "12-02-0001", glName: "Salaries & Wages" },
+        { keywords: ["interest", "fd", "deposit"], glCode: "12-01-0002", glName: "Interest on FDs" },
+        { keywords: ["rent", "premises"], glCode: "12-03-0001", glName: "Rent Expenses" },
+        { keywords: ["electricity", "power", "utility"], glCode: "12-03-0002", glName: "Electricity Expenses" },
+        { keywords: ["stationery", "office"], glCode: "12-03-0003", glName: "Office Expenses" },
+        { keywords: ["audit", "professional"], glCode: "12-03-0004", glName: "Professional Fees" },
+        { keywords: ["loan", "advance"], glCode: "02-03-0001", glName: "Loans & Advances" },
+        { keywords: ["cash", "petty"], glCode: "05-01-0001", glName: "Cash in Hand" },
+    ];
+
+    for (const pattern of patterns) {
+        if (pattern.keywords.some(kw => narrationLower.includes(kw))) {
+            return { glCode: pattern.glCode, glName: pattern.glName, confidence: 0.85 };
+        }
+    }
+
+    return null;
+}
+
 // POST /api/v1/gl/vouchers — Create voucher (maker)
 router.post("/vouchers", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const tenantId = req.user!.tenantId!;
         const data = z.object({
-            voucherType: z.enum(["JV", "RV", "PV", "BV"]),
+            voucherType: z.enum(["JV", "RV", "PV", "BV", "AUDIT_ADJ"]),
             date: z.string(),
             narration: z.string().optional(),
             totalAmount: z.number().positive(),
@@ -128,13 +154,59 @@ router.post("/vouchers", authMiddleware, requireTenant, async (req: AuthRequest,
                 credit: z.number().default(0),
                 narration: z.string().optional(),
             })).min(2),
+            // ACC-010: Audit Adjustment Entries
+            isAuditAdjustment: z.boolean().optional(),
+            auditAccessStartDate: z.string().optional(),
+            auditAccessEndDate: z.string().optional(),
         }).parse(req.body);
 
+        // ACC-010: Check if period is closed (block non-audit entries)
+        const voucherPeriod = data.date.substring(0, 7); // YYYY-MM
+        const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+        const isPeriodClosed = tenant?.closedPeriods?.includes(voucherPeriod) || false;
+        const isAuditAdj = data.voucherType === "AUDIT_ADJ" || data.isAuditAdjustment;
+
+        if (isPeriodClosed && !isAuditAdj) {
+            res.status(403).json({
+                success: false,
+                message: `Period ${voucherPeriod} is closed. Only audit adjustment entries are allowed.`,
+            });
+            return;
+        }
+
+        // ACC-010: Validate audit access period
+        if (isAuditAdj && req.user?.role !== "auditor" && req.user?.role !== "admin") {
+            res.status(403).json({
+                success: false,
+                message: "Only auditors and admins can create audit adjustment entries",
+            });
+            return;
+        }
+
+        if (isAuditAdj && data.auditAccessStartDate && data.auditAccessEndDate) {
+            const now = new Date();
+            const accessStart = new Date(data.auditAccessStartDate);
+            const accessEnd = new Date(data.auditAccessEndDate);
+            if (now < accessStart || now > accessEnd) {
+                res.status(403).json({
+                    success: false,
+                    message: "Audit access period has expired or not yet started",
+                });
+                return;
+            }
+        }
+
+        // DA-001: Generate voucher number - VCH-YYYY-MM-NNNNNN format
         const count = await prisma.voucher.count({ where: { tenantId } });
-        const voucherNumber = `${data.voucherType}${String(count + 1).padStart(6, "0")}`;
+        const { generateVoucherId } = await import("../../lib/id-generator");
+        const voucherDate = new Date(data.date);
+        const voucherNumber = isAuditAdj 
+            ? `AUDIT-${voucherDate.getFullYear()}-${String(voucherDate.getMonth() + 1).padStart(2, "0")}-${String(count + 1).padStart(6, "0")}`
+            : generateVoucherId(count + 1, voucherDate.getFullYear(), voucherDate.getMonth() + 1);
 
         // Tenant admin (role=admin) can post directly without maker-checker approval
-        const isTenantAdmin = req.user?.role === "admin";
+        // Audit adjustments always require maker-checker
+        const isTenantAdmin = req.user?.role === "admin" && !isAuditAdj;
         const initialStatus = isTenantAdmin ? "posted" : "pending";
 
         const voucher = await prisma.$transaction(async (tx) => {
@@ -142,12 +214,15 @@ router.post("/vouchers", authMiddleware, requireTenant, async (req: AuthRequest,
                 data: {
                     tenantId,
                     voucherNumber,
-                    voucherType: data.voucherType,
+                    voucherType: isAuditAdj ? "AUDIT_ADJ" : data.voucherType,
                     date: new Date(data.date),
                     narration: data.narration,
                     totalAmount: data.totalAmount,
                     status: initialStatus,
                     makerUserId: req.user?.userId,
+                    isAuditAdjustment: isAuditAdj,
+                    auditAccessStartDate: isAuditAdj && data.auditAccessStartDate ? new Date(data.auditAccessStartDate) : null,
+                    auditAccessEndDate: isAuditAdj && data.auditAccessEndDate ? new Date(data.auditAccessEndDate) : null,
                     ...(isTenantAdmin && {
                         checkerUserId: req.user?.userId,
                         approvedAt: new Date(),
@@ -175,6 +250,44 @@ router.post("/vouchers", authMiddleware, requireTenant, async (req: AuthRequest,
         });
 
         res.status(201).json({ success: true, voucher });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// AI-005: POST /api/v1/gl/suggest-classification — Auto-Ledger Classification
+router.post("/suggest-classification", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { narration } = z.object({
+            narration: z.string().min(1),
+        }).parse(req.body);
+
+        const suggestion = await suggestGlCode(narration, tenantId);
+        if (!suggestion) {
+            res.json({ success: true, suggestion: null });
+            return;
+        }
+
+        // Log classification attempt
+        await prisma.aiAuditLog.create({
+            data: {
+                tenantId,
+                userId: req.user?.userId,
+                feature: "auto_ledger_classification",
+                inputData: JSON.stringify({ narration }),
+                outputData: JSON.stringify(suggestion),
+                success: true,
+                confidence: suggestion.confidence,
+                modelVersion: "v1.0",
+            },
+        });
+
+        res.json({ success: true, suggestion });
     } catch (err) {
         if (err instanceof z.ZodError) {
             res.status(400).json({ success: false, errors: err.errors });
@@ -246,8 +359,11 @@ router.post("/vouchers/:id/reverse", authMiddleware, requireTenant, async (req: 
             return;
         }
 
+        // DA-001: Generate reversal voucher number - VCH-YYYY-MM-NNNNNN format
         const count = await prisma.voucher.count({ where: { tenantId } });
-        const voucherNumber = `RV${String(count + 1).padStart(6, "0")}`;
+        const { generateVoucherId } = await import("../../lib/id-generator");
+        const now = new Date();
+        const voucherNumber = generateVoucherId(count + 1, now.getFullYear(), now.getMonth() + 1).replace("VCH", "RV");
 
         const reversal = await prisma.$transaction(async (tx) => {
             const v = await tx.voucher.create({
@@ -311,8 +427,19 @@ function buildGlWhere(tenantId: string, period?: string, fromDate?: string, toDa
 router.get("/trial-balance", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const tenantId = req.user!.tenantId!;
-        const { period, fromDate, toDate } = req.query as Record<string, string>;
-        const where = buildGlWhere(tenantId, period, fromDate, toDate);
+        const { period, fromDate, toDate, excludeAuditAdj } = req.query as Record<string, string>;
+        const where: any = buildGlWhere(tenantId, period, fromDate, toDate);
+
+        // ACC-010: Option to exclude audit adjustments for pre-adjustment TB
+        if (excludeAuditAdj === "true") {
+            const auditVoucherIds = await prisma.voucher.findMany({
+                where: { tenantId, isAuditAdjustment: true },
+                select: { id: true },
+            });
+            if (auditVoucherIds.length > 0) {
+                where.voucherId = { notIn: auditVoucherIds.map((v) => v.id) };
+            }
+        }
 
         const entries = await prisma.glEntry.groupBy({
             by: ["glCode", "glName"],
@@ -333,7 +460,18 @@ router.get("/trial-balance", authMiddleware, requireTenant, async (req: AuthRequ
             { totalDebit: 0, totalCredit: 0 }
         );
 
-        res.json({ success: true, rows, totals, period });
+        // Check if period is frozen
+        const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+        const isFrozen = tenant?.closedPeriods?.includes(period || "") || false;
+
+        res.json({
+            success: true,
+            rows,
+            totals,
+            period: period || (fromDate && toDate ? `${fromDate} to ${toDate}` : currentPeriod()),
+            isFrozen,
+            frozenAt: isFrozen ? new Date().toISOString() : null,
+        });
     } catch {
         res.status(500).json({ success: false, message: "Server error" });
     }

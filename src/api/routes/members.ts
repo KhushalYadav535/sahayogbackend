@@ -41,6 +41,9 @@ const memberSchema = z.object({
     isMinor: z.boolean().optional(),
     guardianName: z.string().optional(),
     majorityDate: z.string().optional(),
+    // MEM-012: Joint Membership
+    jointMemberId: z.string().optional(),
+    jointMode: z.enum(["EITHER_OR_SURVIVOR", "JOINTLY"]).optional(),
 });
 
 // GET /api/v1/members
@@ -118,9 +121,10 @@ router.post("/", authMiddleware, requireTenant, async (req: AuthRequest, res: Re
             return;
         }
 
-        // Generate member number
+        // Generate member number - DA-001: MEM-YYYY-NNNNNN format
         const count = await prisma.member.count({ where: { tenantId } });
-        const memberNumber = `M${String(count + 1).padStart(6, "0")}`;
+        const { generateMemberId } = await import("../../lib/id-generator");
+        const memberNumber = generateMemberId(count + 1);
 
         const member = await prisma.member.create({
             data: {
@@ -129,6 +133,8 @@ router.post("/", authMiddleware, requireTenant, async (req: AuthRequest, res: Re
                 ...data,
                 dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
                 majorityDate: data.majorityDate ? new Date(data.majorityDate) : undefined,
+                jointMemberId: data.jointMemberId || undefined,
+                jointMode: data.jointMode || undefined,
             },
         });
 
@@ -461,6 +467,684 @@ router.post("/:id/death-settlement", authMiddleware, requireTenant, async (req: 
         }
         res.status(500).json({ success: false, message: "Server error" });
     }
+});
+
+// ─── GET /api/v1/members/:id/ledger — Member Ledger (MEM-007) ─────
+router.get("/:id/ledger", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const memberId = req.params.id;
+        const { startDate, endDate, accountType, transactionType, minAmount, maxAmount } = req.query as Record<string, string>;
+
+        // Verify member exists
+        const member = await prisma.member.findFirst({ where: { id: memberId, tenantId } });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        const where: Record<string, unknown> = { memberId };
+        if (startDate || endDate) {
+            where.createdAt = {};
+            if (startDate) (where.createdAt as any).gte = new Date(startDate);
+            if (endDate) (where.createdAt as any).lte = new Date(endDate);
+        }
+
+        // Collect transactions from all sources
+        const [sbTransactions, shareTransactions, loanTransactions, depositTransactions] = await Promise.all([
+            // SB Account transactions
+            prisma.transaction.findMany({
+                where: {
+                    account: { memberId, tenantId },
+                    ...(accountType === "sb" ? {} : accountType ? { account: { accountType } } : {}),
+                    ...(transactionType ? { category: transactionType } : {}),
+                    ...(minAmount || maxAmount ? {
+                        amount: {
+                            ...(minAmount ? { gte: parseFloat(minAmount) } : {}),
+                            ...(maxAmount ? { lte: parseFloat(maxAmount) } : {}),
+                        },
+                    } : {}),
+                },
+                include: { account: { select: { accountNumber: true, accountType: true } } },
+                orderBy: { createdAt: "desc" },
+            }),
+            // Share ledger transactions
+            prisma.shareLedger.findMany({
+                where: { memberId, tenantId },
+                orderBy: { date: "desc" },
+            }),
+            // Loan transactions (EMI payments, etc.)
+            prisma.loan.findMany({
+                where: { memberId, tenantId },
+                include: {
+                    emiSchedule: {
+                        where: { status: { in: ["paid", "partial"] } },
+                        orderBy: { paidAt: "desc" },
+                    },
+                },
+            }),
+            // Deposit transactions (maturity, withdrawal)
+            prisma.deposit.findMany({
+                where: {
+                    memberId,
+                    tenantId,
+                    OR: [
+                        { status: "matured" },
+                        { status: "prematurely_closed" },
+                    ],
+                },
+                orderBy: { closedAt: "desc" },
+            }),
+        ]);
+
+        // Format ledger entries
+        const ledgerEntries: any[] = [];
+
+        // SB transactions
+        sbTransactions.forEach(tx => {
+            ledgerEntries.push({
+                date: tx.createdAt,
+                type: "account",
+                accountType: tx.account.accountType,
+                accountNumber: tx.account.accountNumber,
+                transactionType: tx.category,
+                description: tx.remarks || `${tx.type} - ${tx.category}`,
+                debit: tx.type === "debit" ? Number(tx.amount) : 0,
+                credit: tx.type === "credit" ? Number(tx.amount) : 0,
+                balance: Number(tx.balanceAfter),
+            });
+        });
+
+        // Share transactions
+        shareTransactions.forEach(tx => {
+            ledgerEntries.push({
+                date: tx.date,
+                type: "share",
+                transactionType: tx.transactionType,
+                description: `Share ${tx.transactionType} - ${tx.shares} shares @ ₹${tx.faceValue}`,
+                debit: tx.transactionType === "refund" ? Number(tx.amount) : 0,
+                credit: tx.transactionType === "purchase" ? Number(tx.amount) : 0,
+                shares: tx.shares,
+                amount: Number(tx.amount),
+            });
+        });
+
+        // Loan transactions
+        loanTransactions.forEach(loan => {
+            loan.emiSchedule.forEach(emi => {
+                if (emi.paidAt) {
+                    ledgerEntries.push({
+                        date: emi.paidAt,
+                        type: "loan",
+                        loanNumber: loan.loanNumber,
+                        transactionType: "emi_payment",
+                        description: `EMI Payment - Installment #${emi.installmentNo}`,
+                        debit: Number(emi.paidAmount),
+                        credit: 0,
+                        principal: Number(emi.principal),
+                        interest: Number(emi.interest),
+                    });
+                }
+            });
+        });
+
+        // Deposit transactions
+        depositTransactions.forEach(deposit => {
+            ledgerEntries.push({
+                date: deposit.closedAt,
+                type: "deposit",
+                depositNumber: deposit.depositNumber,
+                depositType: deposit.depositType,
+                transactionType: deposit.status === "matured" ? "maturity" : "premature_withdrawal",
+                description: `${deposit.depositType.toUpperCase()} ${deposit.status === "matured" ? "Matured" : "Premature Withdrawal"}`,
+                debit: 0,
+                credit: Number(deposit.maturityAmount || deposit.principal),
+                principal: Number(deposit.principal),
+                interest: Number(deposit.accruedInterest),
+            });
+        });
+
+        // Sort by date
+        ledgerEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+        res.json({
+            success: true,
+            member: { id: member.id, memberNumber: member.memberNumber, name: `${member.firstName} ${member.lastName}` },
+            ledger: ledgerEntries,
+            total: ledgerEntries.length,
+        });
+    } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/suspend — MEM-017: Suspend Member ─────
+router.post("/:id/suspend", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { reasonCode, remarks } = z.object({
+            reasonCode: z.string(),
+            remarks: z.string().optional(),
+        }).parse(req.body);
+
+        const member = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        const previousStatus = member.status;
+        await prisma.member.update({
+            where: { id: req.params.id },
+            data: { status: "suspended" },
+        });
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "MEMBER_SUSPEND",
+            entity: "Member",
+            entityId: member.id,
+            oldData: { status: previousStatus },
+            newData: { status: "suspended", reasonCode, remarks },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "Member suspended", member: await prisma.member.findUnique({ where: { id: req.params.id } }) });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/blacklist — MEM-017: Blacklist Member ─────
+router.post("/:id/blacklist", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { reasonCode, remarks } = z.object({
+            reasonCode: z.string(),
+            remarks: z.string().optional(),
+        }).parse(req.body);
+
+        const member = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        const previousStatus = member.status;
+        await prisma.member.update({
+            where: { id: req.params.id },
+            data: { status: "blacklisted" },
+        });
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "MEMBER_BLACKLIST",
+            entity: "Member",
+            entityId: member.id,
+            oldData: { status: previousStatus },
+            newData: { status: "blacklisted", reasonCode, remarks },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "Member blacklisted", member: await prisma.member.findUnique({ where: { id: req.params.id } }) });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/reactivate — Reactivate Suspended Member ─────
+router.post("/:id/reactivate", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const member = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        if (member.status !== "suspended") {
+            res.status(400).json({ success: false, message: "Member is not suspended" });
+            return;
+        }
+
+        const previousStatus = member.status;
+        await prisma.member.update({
+            where: { id: req.params.id },
+            data: { status: "active" },
+        });
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "MEMBER_REACTIVATE",
+            entity: "Member",
+            entityId: member.id,
+            oldData: { status: previousStatus },
+            newData: { status: "active" },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "Member reactivated", member: await prisma.member.findUnique({ where: { id: req.params.id } }) });
+    } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/shares/transfer — MEM-016: Share Transfer ─────
+router.post("/:id/shares/transfer", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { targetMemberId, shares, faceValue, resolutionRef, remarks } = z.object({
+            targetMemberId: z.string(),
+            shares: z.number().int().positive(),
+            faceValue: z.number().positive(),
+            resolutionRef: z.string(),
+            remarks: z.string().optional(),
+        }).parse(req.body);
+
+        const sourceMember = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+        const targetMember = await prisma.member.findFirst({ where: { id: targetMemberId, tenantId } });
+
+        if (!sourceMember || !targetMember) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        // Check source member has enough shares
+        const sourceLedger = await prisma.shareLedger.findMany({ where: { memberId: sourceMember.id } });
+        const sourceShares = sourceLedger.reduce((sum, tx) => {
+            return tx.transactionType === "purchase" ? sum + tx.shares : sum - tx.shares;
+        }, 0);
+
+        if (sourceShares < shares) {
+            res.status(400).json({ success: false, message: "Insufficient shares" });
+            return;
+        }
+
+        // Create transfer entries (requires BOD approval - status pending)
+        const transferAmount = shares * faceValue;
+        await prisma.$transaction([
+            // Debit source member
+            prisma.shareLedger.create({
+                data: {
+                    memberId: sourceMember.id,
+                    tenantId,
+                    transactionType: "transfer",
+                    shares: -shares,
+                    faceValue,
+                    amount: -transferAmount,
+                    remarks: `Transfer to ${targetMember.memberNumber} - ${resolutionRef}`,
+                },
+            }),
+            // Credit target member
+            prisma.shareLedger.create({
+                data: {
+                    memberId: targetMember.id,
+                    tenantId,
+                    transactionType: "transfer",
+                    shares,
+                    faceValue,
+                    amount: transferAmount,
+                    remarks: `Transfer from ${sourceMember.memberNumber} - ${resolutionRef}`,
+                },
+            }),
+        ]);
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "SHARE_TRANSFER",
+            entity: "ShareLedger",
+            entityId: sourceMember.id,
+            newData: { sourceMember: sourceMember.memberNumber, targetMember: targetMember.memberNumber, shares, resolutionRef },
+            ipAddress: req.ip,
+        });
+
+        res.json({
+            success: true,
+            message: "Share transfer recorded (pending BOD approval)",
+            transfer: {
+                from: sourceMember.memberNumber,
+                to: targetMember.memberNumber,
+                shares,
+                amount: transferAmount,
+                resolutionRef,
+            },
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/kyc/revalidate — MEM-014: KYC Re-validation ─────
+router.post("/:id/kyc/revalidate", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const member = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        // Reset KYC status for re-validation
+        await prisma.member.update({
+            where: { id: req.params.id },
+            data: {
+                kycStatus: "pending",
+                kycVerifiedAt: null,
+            },
+        });
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "KYC_REVALIDATION_INITIATED",
+            entity: "Member",
+            entityId: member.id,
+            newData: { message: "KYC re-validation initiated" },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "KYC re-validation initiated. Member must complete verification." });
+    } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── GET /api/v1/members/:id/certificate — MEM-019: Membership Certificate ─────
+router.get("/:id/certificate", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const member = await prisma.member.findFirst({
+            where: { id: req.params.id, tenantId },
+            include: {
+                tenant: { select: { name: true } },
+                shareLedger: true,
+            },
+        });
+
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        const totalShares = member.shareLedger.reduce((sum, tx) => {
+            return tx.transactionType === "purchase" ? sum + tx.shares : sum - tx.shares;
+        }, 0);
+
+        const certificateHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Membership Certificate - ${member.memberNumber}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        .header { text-align: center; border-bottom: 3px solid #000; padding-bottom: 20px; margin-bottom: 30px; }
+        .society-name { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
+        .certificate-title { font-size: 20px; font-weight: bold; margin-top: 15px; }
+        .member-no { font-family: monospace; font-size: 14px; color: #0066cc; margin-top: 10px; }
+        .details { margin: 30px 0; }
+        .detail-row { display: flex; justify-content: space-between; margin: 12px 0; padding: 8px 0; border-bottom: 1px dotted #ccc; }
+        .detail-label { font-weight: bold; width: 40%; }
+        .detail-value { width: 60%; text-align: right; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #000; font-size: 12px; text-align: center; color: #666; }
+        .signature-section { margin-top: 50px; display: flex; justify-content: space-between; }
+        .signature-box { width: 45%; text-align: center; }
+        .signature-line { border-top: 1px solid #000; margin-top: 60px; padding-top: 5px; }
+        @media print { body { margin: 20px; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="society-name">${member.tenant.name || "Sahayog AI Cooperative Society"}</div>
+        <div style="font-size: 12px; color: #666;">Registered under Maharashtra Co-operative Societies Act</div>
+        <div class="certificate-title">MEMBERSHIP CERTIFICATE</div>
+        <div class="member-no">Certificate No: ${member.memberNumber}</div>
+    </div>
+
+    <div class="details">
+        <div class="detail-row">
+            <span class="detail-label">Member Name:</span>
+            <span class="detail-value">${member.firstName} ${member.lastName}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Member Number:</span>
+            <span class="detail-value">${member.memberNumber}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Date of Joining:</span>
+            <span class="detail-value">${member.joinDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Shares Held:</span>
+            <span class="detail-value">${totalShares} shares</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Status:</span>
+            <span class="detail-value">${member.status.toUpperCase()}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">KYC Status:</span>
+            <span class="detail-value">${member.kycStatus.toUpperCase()}</span>
+        </div>
+    </div>
+
+    <div class="signature-section">
+        <div class="signature-box">
+            <div class="signature-line">Secretary</div>
+        </div>
+        <div class="signature-box">
+            <div class="signature-line">President</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>This certificate is computer generated and does not require physical signature.</p>
+        <p>Generated on: ${new Date().toLocaleString('en-IN')}</p>
+    </div>
+</body>
+</html>`;
+
+        res.setHeader("Content-Type", "text/html");
+        res.setHeader("Content-Disposition", `inline; filename="Membership_Certificate_${member.memberNumber}.html"`);
+        res.send(certificateHtml);
+    } catch (err) {
+        console.error("Certificate generation error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/bulk-import — MEM-018: Bulk Member Import ─────
+router.post("/bulk-import", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { members } = z.object({
+            members: z.array(z.object({
+                firstName: z.string(),
+                lastName: z.string(),
+                dateOfBirth: z.string().optional(),
+                gender: z.enum(["male", "female", "other"]).optional(),
+                phone: z.string().optional(),
+                email: z.string().email().optional(),
+                address: z.string().optional(),
+                aadhaarNumber: z.string().optional(),
+                panNumber: z.string().optional(),
+                occupation: z.string().optional(),
+            })),
+        }).parse(req.body);
+
+        const results: any[] = [];
+        const errors: any[] = [];
+
+        for (let i = 0; i < members.length; i++) {
+            const memberData = members[i];
+            try {
+                // Check for duplicates
+                const existing = await prisma.member.findFirst({
+                    where: {
+                        tenantId,
+                        OR: [
+                            { aadhaarNumber: memberData.aadhaarNumber },
+                            { phone: memberData.phone },
+                        ],
+                    },
+                });
+
+                if (existing) {
+                    errors.push({ row: i + 1, member: `${memberData.firstName} ${memberData.lastName}`, error: "Duplicate member found" });
+                    continue;
+                }
+
+                // DA-001: Generate member number - MEM-YYYY-NNNNNN format
+                const count = await prisma.member.count({ where: { tenantId } });
+                const { generateMemberId } = await import("../../lib/id-generator");
+                const memberNumber = generateMemberId(count + 1);
+
+                const member = await prisma.member.create({
+                    data: {
+                        tenantId,
+                        memberNumber,
+                        ...memberData,
+                        dateOfBirth: memberData.dateOfBirth ? new Date(memberData.dateOfBirth) : undefined,
+                    },
+                });
+
+                results.push({ row: i + 1, memberNumber: member.memberNumber, status: "created" });
+            } catch (err: any) {
+                errors.push({ row: i + 1, member: `${memberData.firstName} ${memberData.lastName}`, error: err.message });
+            }
+        }
+
+        res.json({
+            success: true,
+            imported: results.length,
+            failed: errors.length,
+            results,
+            errors,
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/joint-link — MEM-012: Link Joint Member ─────
+router.post("/:id/joint-link", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { jointMemberId, jointMode } = z.object({
+            jointMemberId: z.string(),
+            jointMode: z.enum(["EITHER_OR_SURVIVOR", "JOINTLY"]),
+        }).parse(req.body);
+
+        const member = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+        const jointMember = await prisma.member.findFirst({ where: { id: jointMemberId, tenantId } });
+
+        if (!member || !jointMember) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        // Link both members
+        await prisma.$transaction([
+            prisma.member.update({
+                where: { id: member.id },
+                data: { jointMemberId: jointMember.id, jointMode },
+            }),
+            prisma.member.update({
+                where: { id: jointMember.id },
+                data: { jointMemberId: member.id, jointMode },
+            }),
+        ]);
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "JOINT_MEMBER_LINKED",
+            entity: "Member",
+            entityId: member.id,
+            newData: { jointMemberId: jointMember.memberNumber, jointMode },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "Joint membership linked" });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── POST /api/v1/members/:id/joint-unlink — MEM-012: Unlink Joint Member ─────
+router.post("/:id/joint-unlink", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const member = await prisma.member.findFirst({ where: { id: req.params.id, tenantId } });
+
+        if (!member || !member.jointMemberId) {
+            res.status(404).json({ success: false, message: "Member not found or not linked" });
+            return;
+        }
+
+        const jointMemberId = member.jointMemberId;
+
+        // Unlink both members
+        await prisma.$transaction([
+            prisma.member.update({
+                where: { id: member.id },
+                data: { jointMemberId: null, jointMode: null },
+            }),
+            prisma.member.update({
+                where: { id: jointMemberId },
+                data: { jointMemberId: null, jointMode: null },
+            }),
+        ]);
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "JOINT_MEMBER_UNLINKED",
+            entity: "Member",
+            entityId: member.id,
+            oldData: { jointMemberId },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "Joint membership unlinked" });
+    } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── GET /api/v1/members/bulk-import/template — Download Import Template ─────
+router.get("/bulk-import/template", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    const csvTemplate = `firstName,lastName,dateOfBirth,gender,phone,email,address,village,district,state,pincode,aadhaarNumber,panNumber,occupation
+John,Doe,1990-01-15,male,9876543210,john@example.com,123 Main St,Village,District,Maharashtra,400001,123456789012,ABCDE1234F,Farmer
+Jane,Smith,1985-05-20,female,9876543211,jane@example.com,456 Oak Ave,Town,District,Maharashtra,400002,987654321098,FGHIJ5678K,Teacher`;
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=member_import_template.csv");
+    res.send(csvTemplate);
 });
 
 export default router;

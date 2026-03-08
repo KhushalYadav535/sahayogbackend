@@ -7,9 +7,24 @@ import { createAuditLog } from "../../db/audit";
 
 const router = Router();
 
+// Helper: Get config value
+async function getConfig(tenantId: string | null, key: string, defaultValue: string): Promise<string> {
+  if (!tenantId) return defaultValue;
+  const config = await prisma.systemConfig.findUnique({
+    where: { tenantId_key: { tenantId, key } },
+  });
+  return config?.value || defaultValue;
+}
+
+async function getConfigNumber(tenantId: string | null, key: string, defaultValue: number): Promise<number> {
+  const value = await getConfig(tenantId, key, defaultValue.toString());
+  return parseFloat(value) || defaultValue;
+}
+
 const loginSchema = z.object({
     email: z.string().email(),
     password: z.string().min(6),
+    mfaCode: z.string().optional(), // SEC-002: MFA code for TOTP
 });
 
 // POST /api/v1/auth/login
@@ -35,6 +50,73 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
             return;
         }
 
+        // RSK-005: Check password expiry
+        const expiryDays = await getConfigNumber(user.tenantId, "password.expiry.days", 90);
+        const passwordChangedAt = user.passwordChangedAt || user.createdAt;
+        const daysSinceChange = Math.floor((Date.now() - passwordChangedAt.getTime()) / (24 * 60 * 60 * 1000));
+        const daysUntilExpiry = expiryDays - daysSinceChange;
+
+        if (user.passwordForceExpire || daysUntilExpiry <= 0) {
+            res.status(403).json({
+                success: false,
+                message: "Password expired. Please change your password.",
+                requiresPasswordChange: true,
+            });
+            return;
+        }
+
+        // SEC-002: MFA Check (for staff roles)
+        const staffRoles = ["superadmin", "admin", "staff", "secretary", "accountant", "loan_officer", "compliance_officer", "auditor"];
+        if (staffRoles.includes(user.role) && user.mfaEnabled) {
+            const { mfaCode } = req.body;
+            if (!mfaCode) {
+                res.status(401).json({
+                    success: false,
+                    message: "MFA code required",
+                    requiresMfa: true,
+                });
+                return;
+            }
+
+            // Verify TOTP code
+            const speakeasy = require("speakeasy");
+            const verified = speakeasy.totp.verify({
+                secret: user.totpSecret!,
+                encoding: "base32",
+                token: mfaCode,
+                window: 2,
+            });
+
+            if (!verified && !user.totpBackupCodes.includes(mfaCode)) {
+                res.status(401).json({ success: false, message: "Invalid MFA code" });
+                return;
+            }
+
+            // If backup code used, remove it
+            if (user.totpBackupCodes.includes(mfaCode)) {
+                const updatedCodes = user.totpBackupCodes.filter((c: string) => c !== mfaCode);
+                await prisma.user.update({
+                    where: { id: user.id },
+                    data: { totpBackupCodes: updatedCodes },
+                });
+            }
+        }
+
+        // RSK-003: Concurrent session control
+        const maxSessions = await getConfigNumber(user.tenantId, "session.max.concurrent", 1);
+        const existingSessions = await prisma.session.findMany({
+            where: { userId: user.id, expiresAt: { gt: new Date() } },
+            orderBy: { lastActivityAt: "asc" },
+        });
+
+        // Kill oldest sessions if limit exceeded
+        if (existingSessions.length >= maxSessions) {
+            const sessionsToKill = existingSessions.slice(0, existingSessions.length - maxSessions + 1);
+            await prisma.session.deleteMany({
+                where: { id: { in: sessionsToKill.map((s: any) => s.id) } },
+            });
+        }
+
         const token = jwt.sign(
             {
                 userId: user.id,
@@ -45,6 +127,21 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
             process.env.JWT_SECRET || "fallback_secret",
             { expiresIn: "8h" }
         );
+
+        const expiresAt = new Date();
+        expiresAt.setHours(expiresAt.getHours() + 8);
+
+        // RSK-003: Create session record
+        await prisma.session.create({
+            data: {
+                userId: user.id,
+                tenantId: user.tenantId,
+                token,
+                ipAddress: req.ip,
+                userAgent: req.headers["user-agent"] || undefined,
+                expiresAt,
+            },
+        });
 
         createAuditLog({
             tenantId: user.tenantId ?? undefined,
@@ -64,6 +161,10 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
                 name: user.name,
                 role: user.role,
                 tenantId: user.tenantId,
+            },
+            passwordExpiry: {
+                daysUntilExpiry,
+                alertLevel: daysUntilExpiry <= 7 ? (daysUntilExpiry <= 1 ? "CRITICAL" : "WARNING") : "NONE",
             },
         });
     } catch (err) {
@@ -232,7 +333,7 @@ router.post("/impersonate", async (req: Request, res: Response): Promise<void> =
         });
     } catch (err) {
         if (err instanceof z.ZodError) {
-            res.status(400).json({ success: false, errors: err.errors });
+            res.status(400).json({ success: false, errors: err.issues });
             return;
         }
         res.status(500).json({ success: false, message: "Server error" });
@@ -260,6 +361,91 @@ router.get("/me", async (req: Request, res: Response): Promise<void> => {
         res.json({ success: true, user });
     } catch {
         res.status(401).json({ success: false, message: "Invalid token" });
+    }
+});
+
+// RSK-005: POST /api/v1/auth/change-password — Change password with history check
+router.post("/change-password", async (req: Request, res: Response): Promise<void> => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith("Bearer ")) {
+            res.status(401).json({ success: false, message: "Unauthorized" });
+            return;
+        }
+
+        const token = authHeader.split(" ")[1];
+        const payload = jwt.verify(token, process.env.JWT_SECRET || "fallback_secret") as { userId: string };
+        const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+        if (!user) {
+            res.status(404).json({ success: false, message: "User not found" });
+            return;
+        }
+
+        const { currentPassword, newPassword } = z.object({
+            currentPassword: z.string().min(6),
+            newPassword: z.string().min(8),
+        }).parse(req.body);
+
+        // Verify current password
+        const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+        if (!valid) {
+            res.status(401).json({ success: false, message: "Current password is incorrect" });
+            return;
+        }
+
+        // RSK-005: Check password history (last 5 passwords)
+        const passwordHistory = await prisma.passwordHistory.findMany({
+            where: { userId: user.id },
+            orderBy: { createdAt: "desc" },
+            take: 5,
+        });
+
+        for (const hist of passwordHistory) {
+            const matches = await bcrypt.compare(newPassword, hist.passwordHash);
+            if (matches) {
+                res.status(400).json({ success: false, message: "New password cannot be one of the last 5 passwords" });
+                return;
+            }
+        }
+
+        // Hash new password
+        const newPasswordHash = await bcrypt.hash(newPassword, 12);
+
+        // Update password and reset expiry
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                passwordHash: newPasswordHash,
+                passwordChangedAt: new Date(),
+                passwordForceExpire: false,
+            },
+        });
+
+        // Add to password history
+        await prisma.passwordHistory.create({
+            data: {
+                userId: user.id,
+                passwordHash: newPasswordHash,
+            },
+        });
+
+        await createAuditLog({
+            tenantId: user.tenantId ?? undefined,
+            userId: user.id,
+            action: "PASSWORD_CHANGED",
+            entity: "User",
+            entityId: user.id,
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, message: "Password changed successfully" });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.issues });
+            return;
+        }
+        console.error("[Auth] Change password error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
     }
 });
 

@@ -21,6 +21,8 @@ export type GlTransactionType =
     | "FDR_MATURE"
     | "RD_OPEN"
     | "RD_INSTALLMENT"
+    | "RD_INSTALLMENT_COLLECTED"
+    | "RD_INTEREST_ACCRUAL"
     | "MIS_OPEN"
     | "MIS_INTEREST_PAYOUT"
     | "LOAN_DISBURSEMENT"
@@ -38,7 +40,9 @@ export type GlTransactionType =
     | "NCCT_FUND"
     | "DEPRECIATION"
     | "ASSET_DISPOSAL_PROFIT"
-    | "ASSET_DISPOSAL_LOSS";
+    | "ASSET_DISPOSAL_LOSS"
+    | "DIVIDEND_PAID"
+    | "EXTERNAL_REFINANCE";
 
 interface GlPostingLine {
     glCode: string;
@@ -95,6 +99,18 @@ const POSTING_MATRIX: Record<GlTransactionType, GlPostingMatrix> = {
         lines: (amount) => [
             { glCode: "02-02-0001", debit: amount, credit: 0 },   // DR FD Liability
             { glCode: "05-01-0001", debit: 0, credit: amount },   // CR Cash (payout)
+        ],
+    },
+    RD_INSTALLMENT_COLLECTED: {
+        lines: (amount) => [
+            { glCode: "02-01-0001", debit: amount, credit: 0 },   // DR SB Members
+            { glCode: "02-03-0001", debit: 0, credit: amount },   // CR RD Members
+        ],
+    },
+    RD_INTEREST_ACCRUAL: {
+        lines: (amount) => [
+            { glCode: "12-01-0003", debit: amount, credit: 0 },   // DR Interest on RD (Expense)
+            { glCode: "02-03-0004", debit: 0, credit: amount },   // CR RD Interest Accrued
         ],
     },
     RD_OPEN: {
@@ -217,6 +233,18 @@ const POSTING_MATRIX: Record<GlTransactionType, GlPostingMatrix> = {
             { glCode: "05-01-0001", debit: 0, credit: amount },   // CR Cash (net of loss)
         ],
     },
+    DIVIDEND_PAID: {
+        lines: (amount) => [
+            { glCode: "03-03-0001", debit: amount, credit: 0 },   // DR Dividend Payable
+            { glCode: "02-01-0001", debit: 0, credit: amount },   // CR SB Members
+        ],
+    },
+    EXTERNAL_REFINANCE: {
+        lines: (amount) => [
+            { glCode: "05-01-0001", debit: amount, credit: 0 },   // DR Cash (refinance receipt)
+            { glCode: "02-05-0003", debit: 0, credit: amount },   // CR Refinance Borrowings
+        ],
+    },
 };
 
 // ──────────────────────────────────────────────────────────
@@ -257,9 +285,11 @@ export async function postGl(
         period,
     }));
 
-    // Generate voucher number
+    // DA-001: Generate voucher number - VCH-YYYY-MM-NNNNNN format
     const count = await prisma.voucher.count({ where: { tenantId } });
-    const voucherNumber = `JV${String(count + 1).padStart(8, "0")}`;
+    const { generateVoucherId } = await import("./id-generator");
+    const now = new Date();
+    const voucherNumber = generateVoucherId(count + 1, now.getFullYear(), now.getMonth() + 1).replace("VCH", "JV");
 
     await prisma.$transaction(async (tx) => {
         const voucher = await tx.voucher.create({

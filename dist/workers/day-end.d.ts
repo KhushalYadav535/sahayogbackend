@@ -18,11 +18,17 @@ export declare function processDayEnd(job: Job<{
     sbAccrualsPosted: number;
     fdrAccrualsPosted: number;
     rdAccrualsPosted: number;
+    rdInstallmentsCollected: number;
+    rdInstallmentsMissed: number;
     misPayoutsPosted: number;
+    sweepInsExecuted: number;
+    sweepOutsExecuted: number;
     overdueEmisMarked: any;
     dormantAccountsMarked: any;
     overdueSuspenseAlerts: any;
     deafApproachingDeposits: any;
+    bodAlertsSent: any;
+    actionItemsEscalated: number;
 }>;
 export declare function startDayEndWorker(): Worker<any, any, string>;
 //# sourceMappingURL=day-end.d.ts.map

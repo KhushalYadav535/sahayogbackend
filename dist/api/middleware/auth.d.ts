@@ -11,4 +11,5 @@ export type AuthRequest = Request & {
 export declare function authMiddleware(req: AuthRequest, res: Response, next: NextFunction): void;
 export declare function requireRole(...roles: string[]): (req: AuthRequest, res: Response, next: NextFunction) => void;
 export declare function requireTenant(req: AuthRequest, res: Response, next: NextFunction): void;
+export declare function requirePermission(...permissions: string[]): (req: AuthRequest, res: Response, next: NextFunction) => Promise<void>;
 //# sourceMappingURL=auth.d.ts.map

@@ -5,10 +5,11 @@
  * These constants MUST NOT be modified without regulatory approval.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEPRECIATION_RULES = exports.NCCT_FUND_RATE = exports.STATUTORY_RESERVE_RATE = exports.LOAN_INTEREST_INCOME_GL = exports.LOAN_GL_CODES = exports.KCC_SUBVENTION_RATE = exports.PRECLOSURE_CHARGE_MAX = exports.PRECLOSURE_CHARGE_MIN = exports.MICROFINANCE_REPAYMENT_CAP = exports.LAD_MAX_RATIO = exports.GOLD_MARGIN_CALL_THRESHOLD = exports.GOLD_LOAN_MAX_LTV = exports.DEAF_ALERT_YEARS = exports.DEAF_TRIGGER_YEARS = exports.DORMANCY_MONTHS = exports.SENIOR_CITIZEN_AGE = exports.TDS_RATE_WITHOUT_PAN = exports.TDS_RATE_WITH_PAN = exports.TDS_THRESHOLD_SENIOR = exports.TDS_THRESHOLD_GENERAL = exports.NPA_PROVISION_GL_CREDIT = exports.NPA_PROVISION_RATES = exports.NPA_DPD_BUCKETS = void 0;
+exports.DEPRECIATION_RULES = exports.NCCT_FUND_RATE = exports.STATUTORY_RESERVE_RATE = exports.LOAN_INTEREST_INCOME_GL = exports.LOAN_GL_CODES = exports.KCC_SUBVENTION_RATE = exports.PRECLOSURE_CHARGE_MAX = exports.PRECLOSURE_CHARGE_MIN = exports.MICROFINANCE_REPAYMENT_CAP = exports.LAD_MAX_RATIO = exports.GOLD_MARGIN_CALL_THRESHOLD = exports.GOLD_LOAN_MAX_LTV = exports.PREMATURE_PENALTY_MATRIX = exports.SWEEP_FDR_TENURE_MONTHS = exports.SWEEP_OUT_THRESHOLD = exports.SWEEP_IN_THRESHOLD = exports.DEAF_ALERT_YEARS = exports.DEAF_TRIGGER_YEARS = exports.DORMANCY_MONTHS = exports.SENIOR_CITIZEN_AGE = exports.TDS_RATE_WITHOUT_PAN = exports.TDS_RATE_WITH_PAN = exports.TDS_THRESHOLD_SENIOR = exports.TDS_THRESHOLD_GENERAL = exports.NPA_PROVISION_GL_CREDIT = exports.NPA_PROVISION_RATES = exports.NPA_DPD_BUCKETS = void 0;
 exports.getNpaCategory = getNpaCategory;
 exports.isNpa = isNpa;
 exports.computeTds = computeTds;
+exports.getPrematurePenaltyRate = getPrematurePenaltyRate;
 exports.getDeprecRule = getDeprecRule;
 exports.computeDepreciation = computeDepreciation;
 /** DPD (Days Past Due) bucket → NPA category */
@@ -93,6 +94,35 @@ exports.DORMANCY_MONTHS = 24;
 exports.DEAF_TRIGGER_YEARS = 10;
 /** Years before DEAF alert (preemptive tracking) */
 exports.DEAF_ALERT_YEARS = 9.5;
+// ──────────────────────────────────────────────────────────
+// Sweep-In/Sweep-Out Rules (SB-009, DEP-016)
+// ──────────────────────────────────────────────────────────
+/** SB balance threshold above which excess is swept to FDR */
+exports.SWEEP_IN_THRESHOLD = 10000; // ₹10,000
+/** SB balance threshold below which FDR is broken to top up */
+exports.SWEEP_OUT_THRESHOLD = 2000; // ₹2,000
+/** Sweep FDR tenure (short-term for sweep-in) */
+exports.SWEEP_FDR_TENURE_MONTHS = 1; // 1 month
+/** Premature withdrawal penalty matrix (metadata-driven) */
+exports.PREMATURE_PENALTY_MATRIX = [
+    { holdingPeriodMonthsMax: 3, penaltyPct: 2.0 },
+    { holdingPeriodMonthsMax: 12, penaltyPct: 1.5 },
+    { holdingPeriodMonthsMax: 24, penaltyPct: 1.0 },
+    { holdingPeriodMonthsMax: 999, penaltyPct: 0.5 },
+];
+/**
+ * Get penalty rate for premature withdrawal based on holding period
+ * @param holdingMonths - Number of months the deposit was held
+ * @returns Penalty percentage (e.g., 2.0 for 2%)
+ */
+function getPrematurePenaltyRate(holdingMonths) {
+    for (const tier of exports.PREMATURE_PENALTY_MATRIX) {
+        if (holdingMonths <= tier.holdingPeriodMonthsMax) {
+            return tier.penaltyPct;
+        }
+    }
+    return exports.PREMATURE_PENALTY_MATRIX[exports.PREMATURE_PENALTY_MATRIX.length - 1].penaltyPct;
+}
 // ──────────────────────────────────────────────────────────
 // Loan Rules
 // ──────────────────────────────────────────────────────────

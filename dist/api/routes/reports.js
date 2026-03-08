@@ -336,5 +336,250 @@ router.get("/portfolio", auth_1.authMiddleware, auth_1.requireTenant, async (req
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
+// BI-007: GET /api/v1/reports/director-kpi — Director KPI Dashboard (6 KPIs with traffic lights)
+router.get("/director-kpi", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const today = new Date();
+        const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+        const fyStart = new Date(today.getFullYear(), 2, 1); // April 1
+        if (today.getMonth() < 2)
+            fyStart.setFullYear(fyStart.getFullYear() - 1);
+        const [totalMembers, newMembersThisMonth, currentDeposits, priorDeposits, loansDisbursedThisMonth, allLoans, npaLoans, complianceEvents, glIncome, glExpenditure,] = await Promise.all([
+            prisma_1.default.member.count({ where: { tenantId, status: "active" } }),
+            prisma_1.default.member.count({
+                where: {
+                    tenantId,
+                    status: "active",
+                    joinDate: { gte: thisMonthStart },
+                },
+            }),
+            prisma_1.default.deposit.aggregate({
+                where: { tenantId, status: "active" },
+                _sum: { principal: true },
+            }),
+            prisma_1.default.deposit.aggregate({
+                where: {
+                    tenantId,
+                    status: "active",
+                    openedAt: { lt: thisMonthStart },
+                },
+                _sum: { principal: true },
+            }),
+            prisma_1.default.loan.aggregate({
+                where: {
+                    tenantId,
+                    disbursedAt: { gte: thisMonthStart, lte: today },
+                },
+                _sum: { principal: true },
+            }),
+            prisma_1.default.loan.findMany({
+                where: { tenantId, disbursedAt: { not: null }, status: { in: ["active", "npa"] } },
+            }),
+            prisma_1.default.loan.findMany({
+                where: { tenantId, status: "npa", disbursedAt: { not: null } },
+            }),
+            prisma_1.default.complianceEvent.findMany({
+                where: { tenantId },
+            }).catch(() => []),
+            prisma_1.default.glEntry.aggregate({
+                where: {
+                    tenantId,
+                    period: { gte: fyStart.toISOString().slice(0, 7) },
+                    glName: { contains: "Income" },
+                },
+                _sum: { credit: true },
+            }),
+            prisma_1.default.glEntry.aggregate({
+                where: {
+                    tenantId,
+                    period: { gte: fyStart.toISOString().slice(0, 7) },
+                    glName: { contains: "Expenditure" },
+                },
+                _sum: { debit: true },
+            }),
+        ]);
+        const totalPortfolio = allLoans.reduce((s, l) => s + Number(l.outstandingPrincipal), 0);
+        const npaOutstanding = npaLoans.reduce((s, l) => s + Number(l.outstandingPrincipal), 0);
+        const npaRatio = totalPortfolio > 0 ? (npaOutstanding / totalPortfolio) * 100 : 0;
+        // KPI 1: Membership Growth
+        const membershipGrowth = totalMembers > 0 ? (newMembersThisMonth / totalMembers) * 100 : 0;
+        const membershipGrowthStatus = membershipGrowth > 2 ? "GREEN" : membershipGrowth >= 0 ? "AMBER" : "RED";
+        // KPI 2: Deposit Growth
+        const currentDepositsTotal = Number(currentDeposits._sum.principal ?? 0);
+        const priorDepositsTotal = Number(priorDeposits._sum.principal ?? 0);
+        const depositGrowth = priorDepositsTotal > 0 ? ((currentDepositsTotal - priorDepositsTotal) / priorDepositsTotal) * 100 : 0;
+        const depositGrowthStatus = depositGrowth > 3 ? "GREEN" : depositGrowth >= 0 ? "AMBER" : "RED";
+        // KPI 3: Loan Disbursement (vs budget - using 10% of portfolio as monthly budget estimate)
+        const monthlyBudget = totalPortfolio * 0.1;
+        const disbursedThisMonth = Number(loansDisbursedThisMonth._sum.principal ?? 0);
+        const disbursementVariance = monthlyBudget > 0 ? ((disbursedThisMonth - monthlyBudget) / monthlyBudget) * 100 : 0;
+        const disbursementStatus = Math.abs(disbursementVariance) < 10 ? "GREEN" : Math.abs(disbursementVariance) < 20 ? "AMBER" : "RED";
+        // KPI 4: NPA Ratio
+        const npaStatus = npaRatio < 2 ? "GREEN" : npaRatio <= 5 ? "AMBER" : "RED";
+        // KPI 5: Compliance Score
+        const totalComplianceItems = complianceEvents.length;
+        const onTimeComplianceItems = complianceEvents.filter((e) => {
+            if (!e.dueDate)
+                return false;
+            const due = new Date(e.dueDate);
+            return due >= today || (e.completedAt && new Date(e.completedAt) <= due);
+        }).length;
+        const complianceScore = totalComplianceItems > 0 ? (onTimeComplianceItems / totalComplianceItems) * 100 : 100;
+        const complianceStatus = complianceScore >= 90 ? "GREEN" : complianceScore >= 75 ? "AMBER" : "RED";
+        // KPI 6: Net Surplus
+        const totalIncome = Number(glIncome._sum.credit ?? 0);
+        const totalExpenditure = Number(glExpenditure._sum.debit ?? 0);
+        const netSurplus = totalIncome - totalExpenditure;
+        const netSurplusStatus = netSurplus >= 0 ? "GREEN" : "RED";
+        res.json({
+            success: true,
+            kpis: [
+                {
+                    name: "Membership Growth",
+                    value: membershipGrowth.toFixed(2) + "%",
+                    formula: `${newMembersThisMonth} / ${totalMembers}`,
+                    status: membershipGrowthStatus,
+                    trend: membershipGrowth > 0 ? "UP" : membershipGrowth < 0 ? "DOWN" : "FLAT",
+                },
+                {
+                    name: "Deposit Growth",
+                    value: depositGrowth.toFixed(2) + "%",
+                    formula: `(${currentDepositsTotal.toLocaleString()} - ${priorDepositsTotal.toLocaleString()}) / ${priorDepositsTotal.toLocaleString()}`,
+                    status: depositGrowthStatus,
+                    trend: depositGrowth > 0 ? "UP" : depositGrowth < 0 ? "DOWN" : "FLAT",
+                },
+                {
+                    name: "Loan Disbursement",
+                    value: formatCurrency(disbursedThisMonth, 0),
+                    formula: `Disbursed: ${disbursedThisMonth.toLocaleString()} vs Budget: ${monthlyBudget.toLocaleString()}`,
+                    status: disbursementStatus,
+                    variance: disbursementVariance.toFixed(1) + "%",
+                },
+                {
+                    name: "NPA Ratio",
+                    value: npaRatio.toFixed(2) + "%",
+                    formula: `${npaOutstanding.toLocaleString()} / ${totalPortfolio.toLocaleString()}`,
+                    status: npaStatus,
+                    trend: npaRatio < 2 ? "GOOD" : npaRatio <= 5 ? "WARNING" : "CRITICAL",
+                },
+                {
+                    name: "Compliance Score",
+                    value: complianceScore.toFixed(0) + "%",
+                    formula: `${onTimeComplianceItems} / ${totalComplianceItems} × 100`,
+                    status: complianceStatus,
+                    trend: complianceScore >= 90 ? "EXCELLENT" : complianceScore >= 75 ? "GOOD" : "POOR",
+                },
+                {
+                    name: "Net Surplus",
+                    value: formatCurrency(netSurplus, 0),
+                    formula: `${totalIncome.toLocaleString()} - ${totalExpenditure.toLocaleString()}`,
+                    status: netSurplusStatus,
+                    trend: netSurplus >= 0 ? "POSITIVE" : "NEGATIVE",
+                },
+            ],
+        });
+    }
+    catch (err) {
+        console.error("[Reports Director KPI]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+// BI-008: GET /api/v1/reports/member-analytics — Member Analytics Dashboard
+router.get("/member-analytics", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const today = new Date();
+        const lastWeek = new Date(today);
+        lastWeek.setDate(lastWeek.getDate() - 7);
+        const lastMonth = new Date(today);
+        lastMonth.setMonth(lastMonth.getMonth() - 1);
+        const [totalMembers, activeMembers, newMembersThisWeek, newMembersThisMonth, membersByStatus, membersByGender, membersByAgeGroup, kycStatus, topMembersBySavings, topMembersByLoans,] = await Promise.all([
+            prisma_1.default.member.count({ where: { tenantId } }),
+            prisma_1.default.member.count({ where: { tenantId, status: "active" } }),
+            prisma_1.default.member.count({
+                where: { tenantId, joinDate: { gte: lastWeek } },
+            }),
+            prisma_1.default.member.count({
+                where: { tenantId, joinDate: { gte: lastMonth } },
+            }),
+            prisma_1.default.member.groupBy({
+                by: ["status"],
+                where: { tenantId },
+                _count: { id: true },
+            }),
+            prisma_1.default.member.groupBy({
+                by: ["gender"],
+                where: { tenantId },
+                _count: { id: true },
+            }),
+            // Age groups: <25, 25-35, 35-45, 45-55, 55-65, 65+
+            Promise.resolve([
+                { range: "<25", count: 0 },
+                { range: "25-35", count: 0 },
+                { range: "35-45", count: 0 },
+                { range: "45-55", count: 0 },
+                { range: "55-65", count: 0 },
+                { range: "65+", count: 0 },
+            ]), // Simplified - would need DOB calculation
+            prisma_1.default.member.groupBy({
+                by: ["kycStatus"],
+                where: { tenantId },
+                _count: { id: true },
+            }),
+            prisma_1.default.sbAccount.findMany({
+                where: { tenantId, status: "active", accountType: "savings" },
+                include: { member: { select: { firstName: true, lastName: true, memberNumber: true } } },
+                orderBy: { balance: "desc" },
+                take: 10,
+            }),
+            prisma_1.default.loan.findMany({
+                where: { tenantId, disbursedAt: { not: null }, status: { in: ["active", "npa"] } },
+                include: { member: { select: { firstName: true, lastName: true, memberNumber: true } } },
+                orderBy: { outstandingPrincipal: "desc" },
+                take: 10,
+            }),
+        ]);
+        const ageGroups = membersByAgeGroup; // Placeholder
+        res.json({
+            success: true,
+            summary: {
+                totalMembers,
+                activeMembers,
+                newMembersThisWeek,
+                newMembersThisMonth,
+                growthRate: totalMembers > 0 ? ((newMembersThisMonth / totalMembers) * 100).toFixed(2) + "%" : "0%",
+            },
+            byStatus: membersByStatus.map((g) => ({ status: g.status, count: g._count.id })),
+            byGender: membersByGender.map((g) => ({ gender: g.gender || "Unknown", count: g._count.id })),
+            byAgeGroup: ageGroups,
+            kycStatus: kycStatus.map((g) => ({ status: g.kycStatus || "pending", count: g._count.id })),
+            topMembersBySavings: topMembersBySavings.map((acc) => ({
+                memberName: `${acc.member.firstName} ${acc.member.lastName}`.trim(),
+                memberNumber: acc.member.memberNumber || acc.memberId.slice(-8),
+                balance: Number(acc.balance),
+            })),
+            topMembersByLoans: topMembersByLoans.map((loan) => ({
+                memberName: `${loan.member.firstName} ${loan.member.lastName}`.trim(),
+                memberNumber: loan.member.memberNumber || loan.memberId.slice(-8),
+                outstanding: Number(loan.outstandingPrincipal),
+            })),
+        });
+    }
+    catch (err) {
+        console.error("[Reports Member Analytics]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+function formatCurrency(amount, decimals = 2) {
+    return new Intl.NumberFormat("en-IN", {
+        style: "currency",
+        currency: "INR",
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+    }).format(amount);
+}
 exports.default = router;
 //# sourceMappingURL=reports.js.map

@@ -4,6 +4,39 @@ import prisma from "../../db/prisma";
 import { authMiddleware, requireTenant, AuthRequest } from "../middleware/auth";
 import { createAuditLog } from "../../db/audit";
 import { postGl, currentPeriod } from "../../lib/gl-posting";
+import { checkTransactionVelocity, checkDailyLimit } from "./risk-controls";
+
+// AI-004: Fraud Scoring Helper
+async function computeFraudScore(tenantId: string, tx: { transactionId: string; accountId: string; type: string; amount: number; category: string }): Promise<number> {
+    let score = 0;
+
+    // Pattern 1: Velocity check - same amount within 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const recentSameAmount = await prisma.transaction.count({
+        where: {
+            accountId: tx.accountId,
+            amount: tx.amount,
+            createdAt: { gte: fiveMinutesAgo },
+        },
+    });
+    if (recentSameAmount > 1) score += 40; // Duplicate transaction
+
+    // Pattern 2: Unusual amount (round numbers > 1L)
+    if (tx.amount >= 100000 && tx.amount % 10000 === 0) score += 15;
+
+    // Pattern 3: Large withdrawal relative to balance
+    const account = await prisma.sbAccount.findUnique({ where: { id: tx.accountId } });
+    if (account && tx.type === "debit") {
+        const balanceRatio = tx.amount / Number(account.balance);
+        if (balanceRatio > 0.9) score += 25; // Withdrawing >90% of balance
+    }
+
+    // Pattern 4: After-hours transaction (outside 9 AM - 6 PM)
+    const hour = new Date().getHours();
+    if (hour < 9 || hour > 18) score += 10;
+
+    return Math.min(100, score);
+}
 
 const router = Router();
 
@@ -27,9 +60,10 @@ router.post("/accounts", authMiddleware, requireTenant, async (req: AuthRequest,
             return;
         }
 
+        // DA-001: Generate SB account number - SB-YYYY-NNNNNN format
         const count = await prisma.sbAccount.count({ where: { tenantId } });
-        const year = new Date().getFullYear();
-        const accountNumber = `SB-${year}-${String(count + 1).padStart(6, "0")}`;
+        const { generateSbAccountId } = await import("../../lib/id-generator");
+        const accountNumber = generateSbAccountId(count + 1);
 
         const account = await prisma.$transaction(async (tx) => {
             const created = await tx.sbAccount.create({
@@ -102,8 +136,17 @@ router.get("/accounts", authMiddleware, requireTenant, async (req: AuthRequest, 
 router.get("/accounts/:id", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const tenantId = req.user!.tenantId!;
+        const accountId = req.params.id;
+        
+        // Support lookup by both database ID (UUID) and accountNumber (SB-YYYY-NNNNNN)
         const account = await prisma.sbAccount.findFirst({
-            where: { id: req.params.id, tenantId },
+            where: {
+                tenantId,
+                OR: [
+                    { id: accountId },
+                    { accountNumber: accountId },
+                ],
+            },
             include: {
                 member: { select: { firstName: true, lastName: true, memberNumber: true, phone: true } },
                 transactions: { orderBy: { processedAt: "desc" }, take: 50 },
@@ -130,6 +173,30 @@ router.post("/accounts/:id/deposit", authMiddleware, requireTenant, async (req: 
         }
 
         const newBalance = Number(account.balance) + amount;
+        const tenantId = req.user!.tenantId!;
+        const userId = req.user!.userId!;
+
+        // RSK-001: Transaction Velocity Check
+        const velocityCheck = await checkTransactionVelocity(tenantId, req.params.id, "deposit", amount);
+        if (!velocityCheck.allowed) {
+            res.status(400).json({
+                success: false,
+                message: velocityCheck.reason,
+                velocityId: velocityCheck.velocityId,
+            });
+            return;
+        }
+
+        // RSK-002: Daily Limit Check (for cash deposits)
+        const dailyLimitCheck = await checkDailyLimit(tenantId, userId, req.params.id, amount, "ACCOUNT_CASH");
+        if (!dailyLimitCheck.allowed) {
+            res.status(400).json({
+                success: false,
+                message: dailyLimitCheck.reason,
+                remaining: dailyLimitCheck.remaining,
+            });
+            return;
+        }
 
         const [updatedAccount, tx] = await prisma.$transaction([
             prisma.sbAccount.update({ where: { id: req.params.id }, data: { balance: newBalance, lastActivityAt: new Date() } }),
@@ -144,6 +211,35 @@ router.post("/accounts/:id/deposit", authMiddleware, requireTenant, async (req: 
                 },
             }),
         ]);
+
+        // AI-004: AI Fraud Scoring (async, non-blocking)
+        setImmediate(async () => {
+            try {
+                const fraudScore = await computeFraudScore(tenantId, {
+                    transactionId: tx.id,
+                    accountId: req.params.id,
+                    type: "credit",
+                    amount,
+                    category: "deposit",
+                });
+                if (fraudScore > 70) {
+                    // Flag for compliance review
+                    await prisma.aiAuditLog.create({
+                        data: {
+                            tenantId,
+                            userId: req.user?.userId,
+                            feature: "fraud_scoring",
+                            inputData: JSON.stringify({ transactionId: tx.id, accountId: req.params.id }),
+                            outputData: JSON.stringify({ fraudScore, flagged: true }),
+                            success: true,
+                            modelVersion: "v1.0",
+                        },
+                    });
+                }
+            } catch (err) {
+                console.error("[Fraud Scoring]", err);
+            }
+        });
 
         res.json({ success: true, account: updatedAccount, transaction: tx });
     } catch {
@@ -181,6 +277,31 @@ router.post("/accounts/:id/withdraw", authMiddleware, requireTenant, async (req:
         }
 
         const newBalance = Number(account.balance) - amount;
+        const tenantId = req.user!.tenantId!;
+        const userId = req.user!.userId!;
+
+        // RSK-001: Transaction Velocity Check
+        const velocityCheck = await checkTransactionVelocity(tenantId, req.params.id, "withdraw", amount);
+        if (!velocityCheck.allowed) {
+            res.status(400).json({
+                success: false,
+                message: velocityCheck.reason,
+                velocityId: velocityCheck.velocityId,
+            });
+            return;
+        }
+
+        // RSK-002: Daily Limit Check (for cash withdrawals)
+        const dailyLimitCheck = await checkDailyLimit(tenantId, userId, req.params.id, amount, "ACCOUNT_CASH");
+        if (!dailyLimitCheck.allowed) {
+            res.status(400).json({
+                success: false,
+                message: dailyLimitCheck.reason,
+                remaining: dailyLimitCheck.remaining,
+            });
+            return;
+        }
+
         const period = currentPeriod();
 
         const [updatedAccount, tx] = await prisma.$transaction([
@@ -200,6 +321,34 @@ router.post("/accounts/:id/withdraw", authMiddleware, requireTenant, async (req:
         // COA: GL posting for withdrawal
         await postGl(req.user!.tenantId!, "SB_WITHDRAWAL", amount,
             `SB withdrawal — ${account.accountNumber}`, period);
+
+        // AI-004: AI Fraud Scoring (async, non-blocking)
+        setImmediate(async () => {
+            try {
+                const fraudScore = await computeFraudScore(tenantId, {
+                    transactionId: tx.id,
+                    accountId: req.params.id,
+                    type: "debit",
+                    amount,
+                    category: "withdrawal",
+                });
+                if (fraudScore > 70) {
+                    await prisma.aiAuditLog.create({
+                        data: {
+                            tenantId,
+                            userId: req.user?.userId,
+                            feature: "fraud_scoring",
+                            inputData: JSON.stringify({ transactionId: tx.id, accountId: req.params.id }),
+                            outputData: JSON.stringify({ fraudScore, flagged: true }),
+                            success: true,
+                            modelVersion: "v1.0",
+                        },
+                    });
+                }
+            } catch (err) {
+                console.error("[Fraud Scoring]", err);
+            }
+        });
 
         res.json({ success: true, account: updatedAccount, transaction: tx });
     } catch {
@@ -247,21 +396,175 @@ router.post("/transfers", authMiddleware, requireTenant, async (req: AuthRequest
     }
 });
 
-// GET /api/v1/sb/accounts/:id/passbook
+// GET /api/v1/sb/accounts/:id/passbook — SB-006: Digital Passbook/Statement
 router.get("/accounts/:id/passbook", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-        const { page = "1", limit = "30" } = req.query as Record<string, string>;
+        const tenantId = req.user!.tenantId!;
+        const { page = "1", limit = "30", startDate, endDate, format, language } = req.query as Record<string, string>;
         const skip = (parseInt(page) - 1) * parseInt(limit);
+
+        const account = await prisma.sbAccount.findFirst({
+            where: { id: req.params.id, tenantId },
+            include: { member: true },
+        });
+
+        if (!account) {
+            res.status(404).json({ success: false, message: "Account not found" });
+            return;
+        }
+
+        const where: Record<string, unknown> = { accountId: req.params.id };
+        if (startDate || endDate) {
+            where.processedAt = {};
+            if (startDate) (where.processedAt as any).gte = new Date(startDate);
+            if (endDate) (where.processedAt as any).lte = new Date(endDate);
+        }
+
         const [transactions, total] = await Promise.all([
             prisma.transaction.findMany({
-                where: { accountId: req.params.id },
-                orderBy: { processedAt: "desc" },
+                where,
+                orderBy: { processedAt: "asc" }, // Chronological order for passbook
                 skip,
                 take: parseInt(limit),
             }),
-            prisma.transaction.count({ where: { accountId: req.params.id } }),
+            prisma.transaction.count({ where }),
         ]);
-        res.json({ success: true, transactions, total });
+
+        // SB-006: PDF/Excel export
+        if (format === "pdf" || format === "excel") {
+            const lang = language || "en";
+            const labels: Record<string, Record<string, string>> = {
+                en: {
+                    passbook: "Passbook",
+                    accountNumber: "Account Number",
+                    memberName: "Member Name",
+                    date: "Date",
+                    narration: "Narration",
+                    debit: "Debit",
+                    credit: "Credit",
+                    balance: "Balance",
+                    openingBalance: "Opening Balance",
+                    closingBalance: "Closing Balance",
+                },
+                hi: {
+                    passbook: "पासबुक",
+                    accountNumber: "खाता संख्या",
+                    memberName: "सदस्य का नाम",
+                    date: "तारीख",
+                    narration: "विवरण",
+                    debit: "निकासी",
+                    credit: "जमा",
+                    balance: "शेष",
+                    openingBalance: "प्रारंभिक शेष",
+                    closingBalance: "अंतिम शेष",
+                },
+                mr: {
+                    passbook: "पासबुक",
+                    accountNumber: "खाते क्रमांक",
+                    memberName: "सदस्याचे नाव",
+                    date: "तारीख",
+                    narration: "विवरण",
+                    debit: "काढणे",
+                    credit: "जमा",
+                    balance: "शिल्लक",
+                    openingBalance: "प्रारंभिक शिल्लक",
+                    closingBalance: "अंतिम शिल्लक",
+                },
+            };
+
+            const t = labels[lang] || labels.en;
+            const openingBalance = transactions.length > 0 ? Number(transactions[0].balanceAfter) - Number(transactions[0].amount) * (transactions[0].type === "credit" ? 1 : -1) : Number(account.balance);
+            const closingBalance = transactions.length > 0 ? Number(transactions[transactions.length - 1].balanceAfter) : Number(account.balance);
+
+            if (format === "pdf") {
+                // Generate HTML for PDF (client-side PDF generation)
+                const html = `
+<!DOCTYPE html>
+<html lang="${lang}">
+<head>
+    <meta charset="UTF-8">
+    <title>${t.passbook} - ${account.accountNumber}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
+        .account-info { margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #000; padding: 8px; text-align: left; }
+        th { background-color: #f0f0f0; }
+        .text-right { text-align: right; }
+        .summary { margin-top: 20px; padding-top: 10px; border-top: 2px solid #000; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Sahayog AI Cooperative Society</h1>
+        <h2>${t.passbook}</h2>
+    </div>
+    <div class="account-info">
+        <p><strong>${t.accountNumber}:</strong> ${account.accountNumber}</p>
+        <p><strong>${t.memberName}:</strong> ${account.member.firstName} ${account.member.lastName}</p>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>${t.date}</th>
+                <th>${t.narration}</th>
+                <th class="text-right">${t.debit}</th>
+                <th class="text-right">${t.credit}</th>
+                <th class="text-right">${t.balance}</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${transactions.map(tx => `
+                <tr>
+                    <td>${new Date(tx.processedAt).toLocaleDateString()}</td>
+                    <td>${tx.remarks || tx.category}</td>
+                    <td class="text-right">${tx.type === "debit" ? `₹${Number(tx.amount).toLocaleString()}` : "-"}</td>
+                    <td class="text-right">${tx.type === "credit" ? `₹${Number(tx.amount).toLocaleString()}` : "-"}</td>
+                    <td class="text-right">₹${Number(tx.balanceAfter).toLocaleString()}</td>
+                </tr>
+            `).join("")}
+        </tbody>
+    </table>
+    <div class="summary">
+        <p><strong>${t.openingBalance}:</strong> ₹${openingBalance.toLocaleString()}</p>
+        <p><strong>${t.closingBalance}:</strong> ₹${closingBalance.toLocaleString()}</p>
+    </div>
+</body>
+</html>`;
+                res.setHeader("Content-Type", "text/html");
+                res.setHeader("Content-Disposition", `inline; filename="Passbook_${account.accountNumber}.html"`);
+                res.send(html);
+                return;
+            }
+
+            if (format === "excel") {
+                // CSV format for Excel
+                const csv = [
+                    [t.passbook, account.accountNumber].join(","),
+                    [t.memberName, `${account.member.firstName} ${account.member.lastName}`].join(","),
+                    [],
+                    [t.date, t.narration, t.debit, t.credit, t.balance].join(","),
+                    ...transactions.map(tx => [
+                        new Date(tx.processedAt).toLocaleDateString(),
+                        `"${(tx.remarks || tx.category).replace(/"/g, '""')}"`,
+                        tx.type === "debit" ? Number(tx.amount) : "",
+                        tx.type === "credit" ? Number(tx.amount) : "",
+                        Number(tx.balanceAfter),
+                    ].join(",")),
+                    [],
+                    [t.openingBalance, openingBalance].join(","),
+                    [t.closingBalance, closingBalance].join(","),
+                ].join("\n");
+
+                res.setHeader("Content-Type", "text/csv");
+                res.setHeader("Content-Disposition", `attachment; filename="Passbook_${account.accountNumber}.csv"`);
+                res.send(csv);
+                return;
+            }
+        }
+
+        res.json({ success: true, transactions, total, account: { accountNumber: account.accountNumber, member: account.member } });
     } catch {
         res.status(500).json({ success: false, message: "Server error" });
     }
@@ -304,6 +607,174 @@ router.post("/accounts/:id/reactivate", authMiddleware, requireTenant, async (re
             accountNumber: account.accountNumber,
         });
     } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── SB-008: Bulk Dividend Credit ──────────────────────────────────────────────
+router.post("/dividend/bulk-credit", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { dividendRate, resolutionRef, fiscalYear } = z.object({
+            dividendRate: z.number().min(0).max(100), // Percentage
+            resolutionRef: z.string().min(1, "Resolution reference is required"),
+            fiscalYear: z.string(),
+        }).parse(req.body);
+
+        // Get all active members with REGULAR or NOMINAL category
+        const members = await prisma.member.findMany({
+            where: {
+                tenantId,
+                status: "active",
+            },
+            include: {
+                sbAccounts: { where: { status: "active" }, take: 1 },
+                shareLedger: true,
+            },
+        });
+
+        // Calculate total shares per member
+        const memberShares = members.map(m => {
+            const totalShares = m.shareLedger.reduce((sum, tx) => {
+                return tx.transactionType === "purchase" ? sum + tx.shares : sum - tx.shares;
+            }, 0);
+            return { member: m, shares: totalShares, sbAccount: m.sbAccounts[0] };
+        }).filter(m => m.shares > 0 && m.sbAccount); // Only members with shares and SB account
+
+        const results: any[] = [];
+        const errors: any[] = [];
+
+        for (const { member, shares, sbAccount } of memberShares) {
+            try {
+                const dividendAmount = Math.round((shares * 100 * dividendRate / 100) * 100) / 100; // Face value ₹100 per share
+
+                if (!sbAccount) {
+                    errors.push({ memberId: member.memberNumber, error: "No active SB account" });
+                    continue;
+                }
+
+                const newBalance = Number(sbAccount.balance) + dividendAmount;
+
+                await prisma.$transaction([
+                    prisma.sbAccount.update({
+                        where: { id: sbAccount.id },
+                        data: { balance: newBalance, lastActivityAt: new Date() },
+                    }),
+                    prisma.transaction.create({
+                        data: {
+                            accountId: sbAccount.id,
+                            type: "credit",
+                            category: "dividend",
+                            amount: dividendAmount,
+                            balanceAfter: newBalance,
+                            remarks: `Dividend credit — ${resolutionRef} (FY ${fiscalYear})`,
+                            reference: resolutionRef,
+                        },
+                    }),
+                ]);
+
+                // GL posting: DR Dividend Payable, CR SB Account
+                await postGl(tenantId, "DIVIDEND_PAID", dividendAmount,
+                    `Dividend credit — ${member.memberNumber} | Res: ${resolutionRef}`, currentPeriod());
+
+                results.push({
+                    memberId: member.memberNumber,
+                    shares,
+                    dividendAmount,
+                    status: "credited",
+                });
+            } catch (err: any) {
+                errors.push({ memberId: member.memberNumber, error: err.message });
+            }
+        }
+
+        await createAuditLog({
+            tenantId,
+            userId: req.user?.userId,
+            action: "BULK_DIVIDEND_CREDIT",
+            entity: "SbAccount",
+            newData: { dividendRate, resolutionRef, fiscalYear, totalCredited: results.length, totalFailed: errors.length },
+            ipAddress: req.ip,
+        });
+
+        res.json({
+            success: true,
+            message: `Dividend credited to ${results.length} accounts`,
+            dividendRate,
+            resolutionRef,
+            fiscalYear,
+            totalCredited: results.length,
+            totalFailed: errors.length,
+            results,
+            errors,
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── SB-011: AI Interest Anomaly Detection ─────────────────────────────────────
+router.post("/interest/anomaly-check", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { accountId, expectedInterest, actualInterest, period } = z.object({
+            accountId: z.string(),
+            expectedInterest: z.number(),
+            actualInterest: z.number(),
+            period: z.string(),
+        }).parse(req.body);
+
+        const account = await prisma.sbAccount.findFirst({ where: { id: accountId, tenantId } });
+        if (!account) {
+            res.status(404).json({ success: false, message: "Account not found" });
+            return;
+        }
+
+        const deviation = Math.abs(actualInterest - expectedInterest);
+        const deviationPercent = (deviation / expectedInterest) * 100;
+        const threshold = 0.5; // Default 0.5% threshold
+
+        if (deviationPercent > threshold) {
+            // Create anomaly record
+            await prisma.aiAuditLog.create({
+                data: {
+                    tenantId,
+                    feature: "sb_interest_anomaly",
+                    inputData: JSON.stringify({ accountId, accountNumber: account.accountNumber, period }),
+                    outputData: JSON.stringify({
+                        expectedInterest,
+                        actualInterest,
+                        deviation,
+                        deviationPercent: Math.round(deviationPercent * 100) / 100,
+                        threshold,
+                    }),
+                    success: false,
+                    errorMsg: `Interest anomaly detected: ${deviationPercent.toFixed(2)}% deviation`,
+                },
+            });
+
+            // TODO: Send alert to accountant
+            res.json({
+                success: true,
+                anomaly: true,
+                message: "Interest anomaly detected",
+                deviationPercent: Math.round(deviationPercent * 100) / 100,
+                expectedInterest,
+                actualInterest,
+            });
+            return;
+        }
+
+        res.json({ success: true, anomaly: false, message: "No anomaly detected" });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
         res.status(500).json({ success: false, message: "Server error" });
     }
 });

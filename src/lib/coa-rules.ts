@@ -123,6 +123,50 @@ export const DEAF_TRIGGER_YEARS = 10;
 export const DEAF_ALERT_YEARS = 9.5;
 
 // ──────────────────────────────────────────────────────────
+// Sweep-In/Sweep-Out Rules (SB-009, DEP-016)
+// ──────────────────────────────────────────────────────────
+
+/** SB balance threshold above which excess is swept to FDR */
+export const SWEEP_IN_THRESHOLD = 10_000; // ₹10,000
+
+/** SB balance threshold below which FDR is broken to top up */
+export const SWEEP_OUT_THRESHOLD = 2_000; // ₹2,000
+
+/** Sweep FDR tenure (short-term for sweep-in) */
+export const SWEEP_FDR_TENURE_MONTHS = 1; // 1 month
+
+// ──────────────────────────────────────────────────────────
+// Premature Withdrawal Penalty Matrix (DEP-005)
+// ──────────────────────────────────────────────────────────
+
+export interface PrematurePenaltyTier {
+    holdingPeriodMonthsMax: number;
+    penaltyPct: number;
+}
+
+/** Premature withdrawal penalty matrix (metadata-driven) */
+export const PREMATURE_PENALTY_MATRIX: PrematurePenaltyTier[] = [
+    { holdingPeriodMonthsMax: 3, penaltyPct: 2.0 },
+    { holdingPeriodMonthsMax: 12, penaltyPct: 1.5 },
+    { holdingPeriodMonthsMax: 24, penaltyPct: 1.0 },
+    { holdingPeriodMonthsMax: 999, penaltyPct: 0.5 },
+];
+
+/**
+ * Get penalty rate for premature withdrawal based on holding period
+ * @param holdingMonths - Number of months the deposit was held
+ * @returns Penalty percentage (e.g., 2.0 for 2%)
+ */
+export function getPrematurePenaltyRate(holdingMonths: number): number {
+    for (const tier of PREMATURE_PENALTY_MATRIX) {
+        if (holdingMonths <= tier.holdingPeriodMonthsMax) {
+            return tier.penaltyPct;
+        }
+    }
+    return PREMATURE_PENALTY_MATRIX[PREMATURE_PENALTY_MATRIX.length - 1].penaltyPct;
+}
+
+// ──────────────────────────────────────────────────────────
 // Loan Rules
 // ──────────────────────────────────────────────────────────
 

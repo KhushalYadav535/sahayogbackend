@@ -4,6 +4,39 @@
  * Maps business transaction types → debit/credit GL entries
  * All postings follow double-entry accounting (∑Debit = ∑Credit per voucher)
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -57,6 +90,18 @@ const POSTING_MATRIX = {
         lines: (amount) => [
             { glCode: "02-02-0001", debit: amount, credit: 0 }, // DR FD Liability
             { glCode: "05-01-0001", debit: 0, credit: amount }, // CR Cash (payout)
+        ],
+    },
+    RD_INSTALLMENT_COLLECTED: {
+        lines: (amount) => [
+            { glCode: "02-01-0001", debit: amount, credit: 0 }, // DR SB Members
+            { glCode: "02-03-0001", debit: 0, credit: amount }, // CR RD Members
+        ],
+    },
+    RD_INTEREST_ACCRUAL: {
+        lines: (amount) => [
+            { glCode: "12-01-0003", debit: amount, credit: 0 }, // DR Interest on RD (Expense)
+            { glCode: "02-03-0004", debit: 0, credit: amount }, // CR RD Interest Accrued
         ],
     },
     RD_OPEN: {
@@ -179,6 +224,18 @@ const POSTING_MATRIX = {
             { glCode: "05-01-0001", debit: 0, credit: amount }, // CR Cash (net of loss)
         ],
     },
+    DIVIDEND_PAID: {
+        lines: (amount) => [
+            { glCode: "03-03-0001", debit: amount, credit: 0 }, // DR Dividend Payable
+            { glCode: "02-01-0001", debit: 0, credit: amount }, // CR SB Members
+        ],
+    },
+    EXTERNAL_REFINANCE: {
+        lines: (amount) => [
+            { glCode: "05-01-0001", debit: amount, credit: 0 }, // DR Cash (refinance receipt)
+            { glCode: "02-05-0003", debit: 0, credit: amount }, // CR Refinance Borrowings
+        ],
+    },
 };
 // ──────────────────────────────────────────────────────────
 // GL Posting Engine
@@ -208,9 +265,11 @@ meta) {
         postingDate: new Date(),
         period,
     }));
-    // Generate voucher number
+    // DA-001: Generate voucher number - VCH-YYYY-MM-NNNNNN format
     const count = await prisma_1.default.voucher.count({ where: { tenantId } });
-    const voucherNumber = `JV${String(count + 1).padStart(8, "0")}`;
+    const { generateVoucherId } = await Promise.resolve().then(() => __importStar(require("./id-generator")));
+    const now = new Date();
+    const voucherNumber = generateVoucherId(count + 1, now.getFullYear(), now.getMonth() + 1).replace("VCH", "JV");
     await prisma_1.default.$transaction(async (tx) => {
         const voucher = await tx.voucher.create({
             data: {

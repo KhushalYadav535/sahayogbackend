@@ -32,6 +32,9 @@ import reportsRoutes from "./routes/reports";
 import approvalsRoutes from "./routes/approvals";
 import aiRoutes from "./routes/ai";
 import fixedAssetsRoutes from "./routes/fixed-assets";
+import riskControlsRoutes from "./routes/risk-controls";
+import securityRoutes from "./routes/security";
+import integrationsRoutes from "./routes/integrations";
 
 dotenv.config();
 
@@ -119,6 +122,9 @@ v1.use("/reports", reportsRoutes);
 v1.use("/approvals", approvalsRoutes);
 v1.use("/ai", aiRoutes);
 v1.use("/fixed-assets", fixedAssetsRoutes);
+v1.use("/risk-controls", riskControlsRoutes);
+v1.use("/security", securityRoutes);
+v1.use("/integrations", integrationsRoutes);
 
 app.use("/api/v1", v1);
 

@@ -259,14 +259,111 @@ router.get("/:id/modules", auth_1.authMiddleware, (0, auth_1.requireRole)("super
 // PATCH /api/v1/platform/tenants/:id/status
 router.patch("/:id/status", auth_1.authMiddleware, (0, auth_1.requireRole)("superadmin"), async (req, res) => {
     try {
-        const { status } = zod_1.z.object({ status: zod_1.z.enum(["trial", "active", "suspended", "inactive", "reactivated", "offboarded"]) }).parse(req.body);
+        const { status, reason } = zod_1.z.object({
+            status: zod_1.z.enum(["trial", "active", "suspended", "inactive", "reactivated", "offboarded"]),
+            reason: zod_1.z.string().optional(),
+        }).parse(req.body);
+        const tenant = await prisma_1.default.tenant.findUnique({ where: { id: req.params.id } });
+        if (!tenant) {
+            res.status(404).json({ success: false, message: "Tenant not found" });
+            return;
+        }
         const updateData = { status };
-        if (status === "offboarded")
+        // Handle trial expiration
+        if (status === "trial" && !tenant.trialEndsAt) {
+            const trialEndsAt = new Date();
+            trialEndsAt.setDate(trialEndsAt.getDate() + 30); // 30-day trial
+            updateData.trialEndsAt = trialEndsAt;
+        }
+        if (status === "offboarded") {
             updateData.offboardedAt = new Date();
-        if (status === "reactivated" || status === "active")
+        }
+        if (status === "reactivated" || status === "active") {
             updateData.offboardedAt = null;
-        const tenant = await prisma_1.default.tenant.update({ where: { id: req.params.id }, data: updateData });
-        res.json({ success: true, tenant });
+            if (status === "active" && tenant.status === "trial") {
+                updateData.trialEndsAt = null; // Clear trial end date when activating
+            }
+        }
+        const updated = await prisma_1.default.tenant.update({ where: { id: req.params.id }, data: updateData });
+        await (0, audit_1.createAuditLog)({
+            userId: req.user?.userId,
+            action: "TENANT_STATUS_CHANGE",
+            entity: "Tenant",
+            entityId: tenant.id,
+            oldData: { status: tenant.status },
+            newData: { status, reason },
+            ipAddress: req.ip,
+        });
+        res.json({ success: true, tenant: updated });
+    }
+    catch (err) {
+        if (err instanceof zod_1.z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+// PATCH /api/v1/platform/tenants/:id/plan — Change subscription plan
+router.patch("/:id/plan", auth_1.authMiddleware, (0, auth_1.requireRole)("superadmin"), async (req, res) => {
+    try {
+        const { plan } = zod_1.z.object({
+            plan: zod_1.z.enum(["starter", "pro", "enterprise"]),
+        }).parse(req.body);
+        const tenant = await prisma_1.default.tenant.findUnique({ where: { id: req.params.id } });
+        if (!tenant) {
+            res.status(404).json({ success: false, message: "Tenant not found" });
+            return;
+        }
+        const updated = await prisma_1.default.tenant.update({
+            where: { id: req.params.id },
+            data: { plan },
+        });
+        await (0, audit_1.createAuditLog)({
+            userId: req.user?.userId,
+            action: "TENANT_PLAN_CHANGE",
+            entity: "Tenant",
+            entityId: tenant.id,
+            oldData: { plan: tenant.plan },
+            newData: { plan },
+            ipAddress: req.ip,
+        });
+        res.json({ success: true, tenant: updated });
+    }
+    catch (err) {
+        if (err instanceof zod_1.z.ZodError) {
+            res.status(400).json({ success: false, errors: err.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+// GET /api/v1/platform/tenants/:id/trial-status — Check trial expiration
+router.get("/:id/trial-status", auth_1.authMiddleware, (0, auth_1.requireRole)("superadmin", "admin"), async (req, res) => {
+    try {
+        const tenant = await prisma_1.default.tenant.findUnique({
+            where: { id: req.params.id },
+            select: { id: true, status: true, trialEndsAt: true, plan: true },
+        });
+        if (!tenant) {
+            res.status(404).json({ success: false, message: "Tenant not found" });
+            return;
+        }
+        const isTrial = tenant.status === "trial";
+        const trialEndsAt = tenant.trialEndsAt;
+        const now = new Date();
+        const daysRemaining = trialEndsAt ? Math.ceil((trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)) : 0;
+        const isExpired = trialEndsAt ? trialEndsAt < now : false;
+        res.json({
+            success: true,
+            trial: {
+                isTrial,
+                trialEndsAt: trialEndsAt?.toISOString() || null,
+                daysRemaining: Math.max(0, daysRemaining),
+                isExpired,
+                shouldTransition: isTrial && isExpired,
+            },
+        });
     }
     catch {
         res.status(500).json({ success: false, message: "Server error" });

@@ -264,28 +264,72 @@ router.post("/run", authMiddleware, requireTenant, async (req: AuthRequest, res:
         const unmatchedBank = upload.entries.filter((e) => !e.matchedGlEntryId);
         const unmatchedGl = glEntries.filter((e) => !upload.entries.some((b) => b.matchedGlEntryId === e.id));
         let matched = 0;
+        const highConfidenceMatches: Array<{ bankId: string; glId: string; confidence: number }> = [];
 
+        // AI-006: Enhanced Auto Reconciliation with fuzzy matching
         for (const bank of unmatchedBank) {
             const bankAmt = Number(bank.amount);
             const bankDate = new Date(bank.entryDate).getTime();
-            const best = unmatchedGl.find((gl) => {
+            const bankNarration = (bank.narration || "").toLowerCase();
+
+            // Find best match with confidence scoring
+            let bestMatch: { gl: typeof glEntries[0]; confidence: number } | null = null;
+
+            for (const gl of unmatchedGl) {
                 const glNet = Number(gl.debit) - Number(gl.credit);
                 const glAmt = Math.abs(glNet);
                 const glDate = new Date(gl.postingDate).getTime();
+                const glNarration = (gl.narration || "").toLowerCase();
+
+                // Amount match (exact)
+                const amountMatch = Math.abs(bankAmt - glAmt) < 0.01;
+                if (!amountMatch) continue;
+
+                // Date match (±2 days tolerance)
                 const dateDiff = Math.abs(bankDate - glDate) / (24 * 60 * 60 * 1000);
-                return Math.abs(bankAmt - glAmt) < 0.01 && dateDiff <= 3;
-            });
-            if (best) {
-                await prisma.bankStatementEntry.update({
-                    where: { id: bank.id },
-                    data: {
-                        matchedGlEntryId: best.id,
-                        matchedAt: new Date(),
-                        isManualMatch: false,
-                    },
-                });
-                matched++;
-                unmatchedGl.splice(unmatchedGl.indexOf(best), 1);
+                if (dateDiff > 2) continue;
+
+                // Narration similarity (fuzzy match)
+                let narrationScore = 0;
+                if (bankNarration && glNarration) {
+                    const bankWords = bankNarration.split(/\s+/);
+                    const glWords = glNarration.split(/\s+/);
+                    const commonWords = bankWords.filter(w => glWords.includes(w));
+                    narrationScore = commonWords.length / Math.max(bankWords.length, glWords.length);
+                }
+
+                // Confidence calculation
+                let confidence = 0;
+                if (amountMatch && dateDiff <= 1) confidence += 50; // Exact amount + date
+                if (dateDiff <= 2) confidence += 20; // Date tolerance
+                if (narrationScore > 0.5) confidence += 30; // Good narration match
+                if (narrationScore > 0.8) confidence += 20; // Excellent narration match
+
+                if (!bestMatch || confidence > bestMatch.confidence) {
+                    bestMatch = { gl, confidence };
+                }
+            }
+
+            if (bestMatch && bestMatch.confidence >= 70) {
+                // High confidence (>90%) auto-match, lower confidence requires confirmation
+                if (bestMatch.confidence >= 90) {
+                    await prisma.bankStatementEntry.update({
+                        where: { id: bank.id },
+                        data: {
+                            matchedGlEntryId: bestMatch.gl.id,
+                            matchedAt: new Date(),
+                            isManualMatch: false,
+                        },
+                    });
+                    matched++;
+                    unmatchedGl.splice(unmatchedGl.indexOf(bestMatch.gl), 1);
+                } else {
+                    highConfidenceMatches.push({
+                        bankId: bank.id,
+                        glId: bestMatch.gl.id,
+                        confidence: bestMatch.confidence,
+                    });
+                }
             }
         }
 
@@ -293,6 +337,8 @@ router.post("/run", authMiddleware, requireTenant, async (req: AuthRequest, res:
             success: true,
             message: `Auto-matched ${matched} entries`,
             matched,
+            highConfidenceMatches: highConfidenceMatches.length,
+            suggestions: highConfidenceMatches, // For manual confirmation
         });
     } catch (err) {
         console.error("[Bank Recon Run]", err);

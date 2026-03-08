@@ -411,16 +411,257 @@ router.get("/deposits", memberAuthMiddleware, async (req: MemberAuthRequest, res
             where: { memberId: req.member!.memberId },
             select: {
                 id: true,
+                depositNumber: true,
                 depositType: true,
                 amount: true,
                 maturityAmount: true,
                 maturityDate: true,
                 status: true,
                 interestRate: true,
+                openedAt: true,
+                tenureMonths: true,
             },
         });
         res.json({ success: true, deposits });
     } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// MP-004: GET /api/v1/me/deposits/maturity-tracker - FDR Maturity Tracker
+router.get("/deposits/maturity-tracker", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const { days = "30" } = req.query as Record<string, string>;
+        const daysAhead = parseInt(days) || 30;
+        const today = new Date();
+        const futureDate = new Date(today);
+        futureDate.setDate(futureDate.getDate() + daysAhead);
+
+        const deposits = await prisma.deposit.findMany({
+            where: {
+                memberId: req.member!.memberId,
+                status: "active",
+                maturityDate: {
+                    gte: today,
+                    lte: futureDate,
+                },
+            },
+            select: {
+                id: true,
+                depositNumber: true,
+                depositType: true,
+                amount: true,
+                maturityAmount: true,
+                maturityDate: true,
+                interestRate: true,
+                openedAt: true,
+            },
+            orderBy: { maturityDate: "asc" },
+        });
+
+        const depositsWithDays = deposits.map(dep => {
+            const maturityDate = new Date(dep.maturityDate);
+            const daysUntilMaturity = Math.ceil((maturityDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            return {
+                ...dep,
+                daysUntilMaturity,
+                isOverdue: daysUntilMaturity < 0,
+            };
+        });
+
+        res.json({ success: true, deposits: depositsWithDays, total: depositsWithDays.length });
+    } catch (err) {
+        console.error("[me/deposits/maturity-tracker] error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// MP-009: GET /api/v1/me/shares/certificate - Share Certificate View
+router.get("/shares/certificate", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const memberId = req.member!.memberId;
+        const member = await prisma.member.findUnique({
+            where: { id: memberId },
+            select: {
+                id: true,
+                memberNumber: true,
+                firstName: true,
+                lastName: true,
+                dateOfBirth: true,
+                address: true,
+                phone: true,
+            },
+        });
+
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+
+        const shareLedger = await prisma.shareLedger.findMany({
+            where: { memberId },
+            orderBy: { date: "asc" },
+        });
+
+        const totalShares = shareLedger.reduce((sum, tx) => {
+            return tx.transactionType === "purchase" ? sum + tx.shares : sum - tx.shares;
+        }, 0);
+
+        const totalShareValue = shareLedger.reduce((sum, tx) => {
+            return tx.transactionType === "purchase" ? sum + Number(tx.amount) : sum - Number(tx.amount);
+        }, 0);
+
+        res.json({
+            success: true,
+            member,
+            totalShares,
+            totalShareValue,
+            shareLedger: shareLedger.map(tx => ({
+                id: tx.id,
+                date: tx.date,
+                transactionType: tx.transactionType,
+                shares: tx.shares,
+                faceValue: Number(tx.faceValue),
+                amount: Number(tx.amount),
+                remarks: tx.remarks,
+            })),
+        });
+    } catch (err) {
+        console.error("[me/shares/certificate] error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// MP-008: POST /api/v1/me/grievance - Grievance Submission
+router.post("/grievance", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const { category, subject, description, priority } = z.object({
+            category: z.string().min(1),
+            subject: z.string().min(1),
+            description: z.string().min(10),
+            priority: z.enum(["low", "medium", "high"]).optional().default("medium"),
+        }).parse(req.body);
+
+        const memberId = req.member!.memberId;
+        const tenantId = req.member!.tenantId;
+
+        // Create grievance record (using a simple approach - could be enhanced with a Grievance model)
+        const grievanceRef = `GRV-${Date.now()}-${memberId.slice(-6).toUpperCase()}`;
+
+        // For now, log it in audit log. In production, create a Grievance model
+        await prisma.auditLog.create({
+            data: {
+                tenantId,
+                userId: memberId,
+                action: "GRIEVANCE_SUBMITTED",
+                entity: "Grievance",
+                entityId: grievanceRef,
+                newData: {
+                    category,
+                    subject,
+                    description,
+                    priority,
+                    memberId,
+                    submittedAt: new Date().toISOString(),
+                },
+            },
+        });
+
+        res.json({
+            success: true,
+            grievanceRef,
+            message: "Grievance submitted successfully. Reference: " + grievanceRef,
+        });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.issues });
+            return;
+        }
+        console.error("[me/grievance] error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// MP-007: GET /api/v1/me/notifications/preferences - Get Notification Preferences
+router.get("/notifications/preferences", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const memberId = req.member!.memberId;
+        // For now, return default preferences. In production, store in Member model or separate table
+        res.json({
+            success: true,
+            preferences: {
+                sms: {
+                    emiReminders: true,
+                    depositMaturity: true,
+                    transactionAlerts: true,
+                    generalUpdates: false,
+                },
+                email: {
+                    emiReminders: true,
+                    depositMaturity: true,
+                    transactionAlerts: false,
+                    generalUpdates: true,
+                },
+                push: {
+                    emiReminders: true,
+                    depositMaturity: true,
+                    transactionAlerts: true,
+                    generalUpdates: true,
+                },
+            },
+        });
+    } catch (err) {
+        console.error("[me/notifications/preferences] error:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// MP-007: PUT /api/v1/me/notifications/preferences - Update Notification Preferences
+router.put("/notifications/preferences", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const preferences = z.object({
+            sms: z.object({
+                emiReminders: z.boolean(),
+                depositMaturity: z.boolean(),
+                transactionAlerts: z.boolean(),
+                generalUpdates: z.boolean(),
+            }),
+            email: z.object({
+                emiReminders: z.boolean(),
+                depositMaturity: z.boolean(),
+                transactionAlerts: z.boolean(),
+                generalUpdates: z.boolean(),
+            }),
+            push: z.object({
+                emiReminders: z.boolean(),
+                depositMaturity: z.boolean(),
+                transactionAlerts: z.boolean(),
+                generalUpdates: z.boolean(),
+            }),
+        }).parse(req.body);
+
+        const memberId = req.member!.memberId;
+        const tenantId = req.member!.tenantId;
+
+        // Store preferences in audit log for now. In production, update Member model or separate table
+        await prisma.auditLog.create({
+            data: {
+                tenantId,
+                userId: memberId,
+                action: "NOTIFICATION_PREFERENCES_UPDATED",
+                entity: "Member",
+                entityId: memberId,
+                newData: preferences,
+            },
+        });
+
+        res.json({ success: true, preferences, message: "Notification preferences updated successfully" });
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            res.status(400).json({ success: false, errors: err.issues });
+            return;
+        }
+        console.error("[me/notifications/preferences] error:", err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
