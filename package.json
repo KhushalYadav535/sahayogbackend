@@ -21,7 +21,9 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.4.2",
     "@prisma/client": "^7.4.2",
+    "@types/multer": "^2.1.0",
     "@types/qrcode": "^1.5.6",
+    "@types/xlsx": "^0.0.35",
     "axios": "^1.13.6",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.70.1",
@@ -32,10 +34,12 @@
     "ioredis": "^5.10.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
+    "multer": "^2.1.1",
     "pg": "^8.19.0",
     "qrcode": "^1.5.4",
     "speakeasy": "^2.0.0",
     "uuid": "^13.0.0",
+    "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

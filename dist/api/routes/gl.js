@@ -41,7 +41,27 @@ const zod_1 = require("zod");
 const prisma_1 = __importDefault(require("../../db/prisma"));
 const auth_1 = require("../middleware/auth");
 const gl_posting_1 = require("../../lib/gl-posting");
+const multer_1 = __importDefault(require("multer"));
+const XLSX = __importStar(require("xlsx"));
 const router = (0, express_1.Router)();
+// Configure multer for file uploads (memory storage)
+const upload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    fileFilter: (_req, file, cb) => {
+        const allowedMimes = [
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+            'application/vnd.ms-excel', // .xls
+            'application/vnd.ms-excel.sheet.macroEnabled.12', // .xlsm
+        ];
+        if (allowedMimes.includes(file.mimetype)) {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('Invalid file type. Only Excel files (.xlsx, .xls) are allowed.'));
+        }
+    },
+});
 // Infer type from GL code prefix: 1=ASSET, 2=LIABILITY, 3=EQUITY, 4=INCOME, 5=EXPENSE
 function inferTypeFromCode(code) {
     const first = code.charAt(0);
@@ -556,6 +576,157 @@ router.get("/pl", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) 
     }
     catch {
         res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+// POST /api/v1/gl/coa/upload — Bulk Upload Chart of Accounts from Excel
+router.post("/coa/upload", auth_1.authMiddleware, auth_1.requireTenant, upload.single("file"), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        if (!req.file) {
+            res.status(400).json({ success: false, message: "No file uploaded" });
+            return;
+        }
+        // Parse Excel file
+        const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        // Expected Excel format:
+        // Row 1: Headers (Code, Name, Type, Parent Code, Schedule, State)
+        // Row 2+: Data rows
+        if (data.length < 2) {
+            res.status(400).json({ success: false, message: "Excel file must contain at least header row and one data row" });
+            return;
+        }
+        const headers = data[0].map((h) => String(h || "").toLowerCase().trim());
+        const codeIdx = headers.findIndex((h) => h.includes("code") && !h.includes("parent"));
+        const nameIdx = headers.findIndex((h) => h.includes("name") || h.includes("account"));
+        const typeIdx = headers.findIndex((h) => h.includes("type"));
+        const parentIdx = headers.findIndex((h) => h.includes("parent"));
+        const scheduleIdx = headers.findIndex((h) => h.includes("schedule"));
+        const stateIdx = headers.findIndex((h) => h.includes("state"));
+        if (codeIdx === -1 || nameIdx === -1 || typeIdx === -1) {
+            res.status(400).json({
+                success: false,
+                message: "Excel file must contain columns: Code, Name, Type (and optionally Parent Code, Schedule, State)"
+            });
+            return;
+        }
+        // Get tenant state for validation
+        const tenant = await prisma_1.default.tenant.findUnique({
+            where: { id: tenantId },
+            select: { state: true },
+        });
+        const tenantState = tenant?.state?.toUpperCase() || "";
+        // Valid states for NABARD/RBI CoA
+        const validStates = ["MP", "UP", "RAJASTHAN", "CHHATTISGARH", "MAHARASHTRA", "MADHYA PRADESH", "UTTAR PRADESH", "CHHATTISGARH"];
+        const isStateValid = !tenantState || validStates.some(s => tenantState.includes(s) || s.includes(tenantState));
+        const accounts = [];
+        const errors = [];
+        const validTypes = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
+        // Process data rows
+        for (let i = 1; i < data.length; i++) {
+            const row = data[i];
+            if (!row || row.length === 0)
+                continue;
+            const code = String(row[codeIdx] || "").trim();
+            const name = String(row[nameIdx] || "").trim();
+            const type = String(row[typeIdx] || "").trim().toUpperCase();
+            const parentCode = parentIdx >= 0 ? String(row[parentIdx] || "").trim() : undefined;
+            const schedule = scheduleIdx >= 0 ? String(row[scheduleIdx] || "").trim() : undefined;
+            const state = stateIdx >= 0 ? String(row[stateIdx] || "").trim().toUpperCase() : undefined;
+            // Validation
+            if (!code) {
+                errors.push({ row: i + 1, error: "Code is required" });
+                continue;
+            }
+            if (!name) {
+                errors.push({ row: i + 1, error: "Name is required" });
+                continue;
+            }
+            if (!validTypes.includes(type)) {
+                errors.push({ row: i + 1, error: `Invalid type: ${type}. Must be one of: ${validTypes.join(", ")}` });
+                continue;
+            }
+            // Validate GL code format (XX-XX-XXXX)
+            const codePattern = /^\d{2}-\d{2}-\d{4}$/;
+            if (!codePattern.test(code)) {
+                errors.push({ row: i + 1, error: `Invalid code format: ${code}. Expected format: XX-XX-XXXX` });
+                continue;
+            }
+            // State validation (if specified)
+            if (state && !validStates.some(s => state.includes(s) || s.includes(state))) {
+                errors.push({ row: i + 1, error: `Invalid state: ${state}. Valid states: ${validStates.join(", ")}` });
+                continue;
+            }
+            // Validate parent code format if provided
+            if (parentCode && !codePattern.test(parentCode)) {
+                errors.push({ row: i + 1, error: `Invalid parent code format: ${parentCode}` });
+                continue;
+            }
+            accounts.push({ code, name, type, parentCode: parentCode || undefined });
+        }
+        if (errors.length > 0) {
+            res.status(400).json({
+                success: false,
+                message: `Validation errors found in ${errors.length} row(s)`,
+                errors,
+            });
+            return;
+        }
+        if (accounts.length === 0) {
+            res.status(400).json({ success: false, message: "No valid accounts found in Excel file" });
+            return;
+        }
+        // Bulk insert accounts (upsert to handle duplicates)
+        const results = {
+            created: 0,
+            updated: 0,
+            skipped: 0,
+            errors: [],
+        };
+        for (const account of accounts) {
+            try {
+                await prisma_1.default.glAccount.upsert({
+                    where: { tenantId_code: { tenantId, code: account.code } },
+                    update: {
+                        name: account.name,
+                        type: account.type,
+                        parentCode: account.parentCode || null,
+                        isActive: true,
+                    },
+                    create: {
+                        tenantId,
+                        code: account.code,
+                        name: account.name,
+                        type: account.type,
+                        parentCode: account.parentCode || null,
+                        isActive: true,
+                    },
+                });
+                results.created++;
+            }
+            catch (err) {
+                results.errors.push({ code: account.code, error: err.message || "Unknown error" });
+                results.skipped++;
+            }
+        }
+        res.json({
+            success: true,
+            message: `Successfully processed ${accounts.length} account(s)`,
+            results: {
+                total: accounts.length,
+                created: results.created,
+                updated: results.updated,
+                skipped: results.skipped,
+                errors: results.errors,
+            },
+        });
+    }
+    catch (err) {
+        console.error("[GL COA UPLOAD]", err);
+        const msg = err instanceof Error ? err.message : "Server error";
+        res.status(500).json({ success: false, message: msg });
     }
 });
 exports.default = router;
