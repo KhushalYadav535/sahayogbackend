@@ -396,12 +396,13 @@ router.get("/deposits/maturity-tracker", member_auth_1.memberAuthMiddleware, asy
         const today = new Date();
         const futureDate = new Date(today);
         futureDate.setDate(futureDate.getDate() + daysAhead);
+        // Fetch deposits maturing within the window OR already overdue (past maturity)
         const deposits = await prisma_1.default.deposit.findMany({
             where: {
                 memberId: req.member.memberId,
                 status: "active",
                 maturityDate: {
-                    gte: today,
+                    not: null,
                     lte: futureDate,
                 },
             },
@@ -418,7 +419,7 @@ router.get("/deposits/maturity-tracker", member_auth_1.memberAuthMiddleware, asy
             orderBy: { maturityDate: "asc" },
         });
         const depositsWithDays = deposits.map(dep => {
-            const maturityDate = new Date(dep.maturityDate);
+            const maturityDate = dep.maturityDate ? new Date(dep.maturityDate) : new Date();
             const daysUntilMaturity = Math.ceil((maturityDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
             return {
                 ...dep,
