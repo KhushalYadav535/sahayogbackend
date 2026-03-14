@@ -28,38 +28,39 @@ model Tenant {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  members              Member[]
-  sbAccounts           SbAccount[]
-  loans                Loan[]
-  glEntries            GlEntry[]
-  vouchers             Voucher[]
-  glAccounts           GlAccount[]
-  config               SystemConfig[]
-  configVersions       TenantConfigVersion[]
-  users                User[]
-  permissionMatrix     PermissionMatrix[]
-  deposits             Deposit[]
-  bodDirectors         BodDirector[]
-  committees           Committee[]
-  agms                 Agm[]
-  resolutions          Resolution[]
-  complianceEvents     ComplianceEvent[]
-  bylaws               Bylaw[]
-  meetingMinutes       MeetingMinutes[]
-  approvalOverrides    ApprovalOverride[]
-  approvalThresholds   ApprovalThreshold[]
-  groupLoans           GroupLoan[] // LN-023
-  billingOverride      TenantBilling?
-  credits              TenantCredits?
-  usageSnapshots       TenantUsageSnapshot[]
-  suspenseEntries      SuspenseEntry[]
-  bankStatementUploads BankStatementUpload[]
-  paymentRequests      PaymentRequest[]
-  notificationLogs     NotificationLog[]
-  interestSchemes      InterestScheme[]
-  interestAccruals     InterestAccrual[]
-  memberPhotos         MemberPhoto[]
-  memberSignatures     MemberSignature[]
+  members               Member[]
+  sbAccounts            SbAccount[]
+  loans                 Loan[]
+  glEntries             GlEntry[]
+  vouchers              Voucher[]
+  glAccounts            GlAccount[]
+  config                SystemConfig[]
+  configVersions        TenantConfigVersion[]
+  users                 User[]
+  permissionMatrix      PermissionMatrix[]
+  deposits              Deposit[]
+  bodDirectors          BodDirector[]
+  committees            Committee[]
+  agms                  Agm[]
+  resolutions           Resolution[]
+  complianceEvents      ComplianceEvent[]
+  bylaws                Bylaw[]
+  meetingMinutes        MeetingMinutes[]
+  approvalOverrides     ApprovalOverride[]
+  approvalThresholds    ApprovalThreshold[]
+  groupLoans            GroupLoan[] // LN-023
+  billingOverride       TenantBilling?
+  credits               TenantCredits?
+  usageSnapshots        TenantUsageSnapshot[]
+  suspenseEntries       SuspenseEntry[]
+  bankStatementUploads  BankStatementUpload[]
+  paymentRequests       PaymentRequest[]
+  notificationLogs      NotificationLog[]
+  interestSchemes       InterestScheme[]
+  interestAccruals      InterestAccrual[]
+  memberPhotos          MemberPhoto[]
+  memberSignatures      MemberSignature[]
+  recalculationRequests RecalculationRequest[]
 
   // ACC-006: Month-End Closing
   closedPeriods String[] @default([]) // Array of closed periods (YYYY-MM format)
@@ -165,14 +166,14 @@ model User {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  tenant             Tenant?             @relation(fields: [tenantId], references: [id])
-  auditLogs          AuditLog[]
-  sessions           Session[]
-  passwordHistory    PasswordHistory[]
-  dataMaskingLogs    DataMaskingLog[]
-  mfaLogs            MfaLog[]
-  roleAssignments    RoleAssignmentLog[] @relation("RoleAssigner")
-  roleAssignmentLogs RoleAssignmentLog[]
+  tenant                Tenant?                @relation(fields: [tenantId], references: [id])
+  auditLogs             AuditLog[]
+  sessions              Session[]
+  passwordHistory       PasswordHistory[]
+  dataMaskingLogs       DataMaskingLog[]
+  mfaLogs               MfaLog[]
+  roleAssignments       RoleAssignmentLog[]    @relation("RoleAssigner")
+  roleAssignmentLogs    RoleAssignmentLog[]
   recalculationRequests RecalculationRequest[] @relation("RecalculationRequester")
 
   @@map("users")
@@ -1444,27 +1445,27 @@ model InterestAccrual {
 
 // INT-010: Backdated Interest Recalculation Request
 model RecalculationRequest {
-  id                String    @id @default(cuid())
-  tenantId          String
-  accountId         String
-  accountType       String // SB | FDR | RD
-  effectiveFromDate DateTime
-  reason            String
-  requestedBy       String // User ID
-  status            String    @default("DRAFT") // DRAFT | PENDING_APPROVAL | APPROVED | REJECTED
-  submittedAt       DateTime?
-  approvedAt        DateTime?
-  approvedBy        String? // Checker user ID
-  rejectedAt        DateTime?
-  rejectedBy        String? // Checker user ID
-  rejectionReason   String?
-  reversalCount     Int?
+  id                 String    @id @default(cuid())
+  tenantId           String
+  accountId          String
+  accountType        String // SB | FDR | RD
+  effectiveFromDate  DateTime
+  reason             String
+  requestedBy        String // User ID
+  status             String    @default("DRAFT") // DRAFT | PENDING_APPROVAL | APPROVED | REJECTED
+  submittedAt        DateTime?
+  approvedAt         DateTime?
+  approvedBy         String? // Checker user ID
+  rejectedAt         DateTime?
+  rejectedBy         String? // Checker user ID
+  rejectionReason    String?
+  reversalCount      Int?
   recalculationCount Int?
-  netDifference     Decimal?  @db.Decimal(15, 2)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  netDifference      Decimal?  @db.Decimal(15, 2)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
   requester User?  @relation("RecalculationRequester", fields: [requestedBy], references: [id])
 
   @@index([tenantId, status])
