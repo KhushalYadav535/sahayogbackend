@@ -13,6 +13,8 @@ import { Worker, Job } from "bullmq";
 import prisma from "../db/prisma";
 import { postGl, currentPeriod } from "../lib/gl-posting";
 import { DORMANCY_MONTHS, DEAF_ALERT_YEARS, SWEEP_IN_THRESHOLD, SWEEP_OUT_THRESHOLD, SWEEP_FDR_TENURE_MONTHS } from "../lib/coa-rules";
+import { calculateInterest, getActiveScheme } from "../services/interest-calculation.service";
+import { detectAnomaly } from "../services/anomaly-detection.service";
 
 const connection = {
     host: process.env.REDIS_HOST || "localhost",
@@ -189,38 +191,161 @@ export async function processDayEnd(job: Job<{ tenantId: string }>) {
             }
         }
 
-        // Daily interest accrual
-        const dailyInterest = Math.round(
-            (balance * Number(acct.interestRate)) / (100 * 365) * 100
-        ) / 100;
-        if (dailyInterest >= 0.01) {
-            // COA: Accrue to GL 02-01-0004 (SB Interest Accrued) — do NOT credit balance yet
-            await postGl(tenantId, "SB_INTEREST_ACCRUAL", dailyInterest,
-                `SB daily interest accrual — ${acct.accountNumber}`, period);
-            sbAccrualsPosted++;
+        // Daily interest accrual - Updated to use new interest calculation service
+        try {
+            const result = await calculateInterest({
+                tenantId,
+                productType: "SB",
+                principal: balance,
+                calculationDate: today,
+            });
+
+            if (result.interestAmount >= 0.01) {
+                const schemeData = await getActiveScheme(tenantId, "SB", today);
+                const schemeId = schemeData?.scheme?.id || null;
+
+                await prisma.interestAccrual.create({
+                    data: {
+                        tenantId,
+                        accountId: acct.id,
+                        accountType: "SB",
+                        schemeId,
+                        accrualDate: today,
+                        rateApplied: result.rateApplied,
+                        schemeVersion: result.schemeCode || null,
+                        amountAccrued: result.interestAmount,
+                        calculationBasis: `ACTUAL_${result.dayCountDenominator}`,
+                        posted: false,
+                    },
+                });
+                await postGl(tenantId, "SB_INTEREST_ACCRUAL", result.interestAmount,
+                    `SB daily interest accrual — ${acct.accountNumber}`, period);
+                sbAccrualsPosted++;
+
+                // INT-012: AI Anomaly Detection
+                try {
+                    const memberAge = acct.member.dateOfBirth
+                        ? Math.floor((today.getTime() - acct.member.dateOfBirth.getTime()) / (1000 * 60 * 60 * 24 * 365.25))
+                        : undefined;
+                    await detectAnomaly(
+                        tenantId,
+                        acct.id,
+                        "SB",
+                        balance,
+                        today,
+                        result.interestAmount,
+                        result.rateApplied,
+                        undefined,
+                        memberAge
+                    );
+                } catch (anomalyErr) {
+                    console.error(`[Day-End] Anomaly detection error for SB ${acct.accountNumber}:`, anomalyErr);
+                    // Don't fail the accrual if anomaly detection fails
+                }
+            }
+        } catch (err) {
+            console.error(`[Day-End] Error calculating SB interest for ${acct.accountNumber}:`, err);
+            // Fallback to simple calculation
+            const dailyInterest = Math.round(
+                (balance * Number(acct.interestRate)) / (100 * 365) * 100
+            ) / 100;
+            if (dailyInterest >= 0.01) {
+                await postGl(tenantId, "SB_INTEREST_ACCRUAL", dailyInterest,
+                    `SB daily interest accrual — ${acct.accountNumber}`, period);
+                sbAccrualsPosted++;
+            }
         }
     }
 
-    // ── 2. FDR Daily Accrual → GL 02-02-0004 ───────────────────────────────
+    // ── 2. FDR Daily Accrual - BRD v4.0 (INT-003, INT-004A) ───────────────────────────────
     const fdrs = await prisma.deposit.findMany({
         where: { tenantId, depositType: "fd", status: "active" },
+        include: { member: true },
     });
 
     let fdrAccrualsPosted = 0;
     for (const fdr of fdrs) {
-        // DEP-003: Configurable compounding frequency handling
-        // For daily accrual, we use simple interest calculation
-        // Compounding is applied at maturity or when interest is credited
-        const dailyRate = Number(fdr.interestRate) / 100 / 365;
-        const dailyInterest = Math.round(Number(fdr.principal) * dailyRate * 100) / 100;
-        if (dailyInterest >= 0.01) {
-            await prisma.deposit.update({
-                where: { id: fdr.id },
-                data: { accruedInterest: Number(fdr.accruedInterest) + dailyInterest },
+        try {
+            // Calculate member age for senior citizen check
+            const memberAge = fdr.member.dateOfBirth
+                ? Math.floor((today.getTime() - fdr.member.dateOfBirth.getTime()) / (1000 * 60 * 60 * 24 * 365.25))
+                : undefined;
+
+            // Calculate tenure days
+            const tenureDays = Math.floor((today.getTime() - fdr.openedAt.getTime()) / (1000 * 60 * 60 * 24));
+
+            // Use new interest calculation service
+            const result = await calculateInterest({
+                tenantId,
+                productType: "FDR",
+                principal: Number(fdr.principal),
+                calculationDate: today,
+                tenureDays,
+                memberAge,
             });
-            await postGl(tenantId, "FDR_INTEREST_ACCRUAL", dailyInterest,
-                `FDR daily interest accrual — ${fdr.depositNumber}`, period);
-            fdrAccrualsPosted++;
+
+            if (result.interestAmount >= 0.01) {
+                // Get scheme ID
+                const schemeData = await getActiveScheme(tenantId, "FDR", today);
+                const schemeId = schemeData?.scheme?.id || null;
+
+                await prisma.deposit.update({
+                    where: { id: fdr.id },
+                    data: { accruedInterest: Number(fdr.accruedInterest) + result.interestAmount },
+                });
+
+                // Store accrual record
+                await prisma.interestAccrual.create({
+                    data: {
+                        tenantId,
+                        accountId: fdr.id,
+                        accountType: "FDR",
+                        schemeId,
+                        accrualDate: today,
+                        rateApplied: result.rateApplied,
+                        schemeVersion: result.schemeCode || null,
+                        amountAccrued: result.interestAmount,
+                        calculationBasis: `ACTUAL_${result.dayCountDenominator}`,
+                        posted: false,
+                    },
+                });
+
+                await postGl(tenantId, "FDR_INTEREST_ACCRUAL", result.interestAmount,
+                    `FDR daily interest accrual — ${fdr.depositNumber}`, period);
+                fdrAccrualsPosted++;
+
+                // INT-012: AI Anomaly Detection
+                try {
+                    await detectAnomaly(
+                        tenantId,
+                        fdr.id,
+                        "FDR",
+                        Number(fdr.principal),
+                        today,
+                        result.interestAmount,
+                        result.rateApplied,
+                        tenureDays,
+                        memberAge
+                    );
+                } catch (anomalyErr) {
+                    console.error(`[Day-End] Anomaly detection error for FDR ${fdr.depositNumber}:`, anomalyErr);
+                    // Don't fail the accrual if anomaly detection fails
+                }
+            }
+        } catch (err) {
+            console.error(`[Day-End] Error calculating FDR interest for ${fdr.depositNumber}:`, err);
+            // Fallback to old method
+            const dailyRate = Number(fdr.interestRate) / 100 / 365;
+            const dailyInterest = Math.round(Number(fdr.principal) * dailyRate * 100) / 100;
+            if (dailyInterest >= 0.01) {
+                await prisma.deposit.update({
+                    where: { id: fdr.id },
+                    data: { accruedInterest: Number(fdr.accruedInterest) + dailyInterest },
+                });
+                await postGl(tenantId, "FDR_INTEREST_ACCRUAL", dailyInterest,
+                    `FDR daily interest accrual — ${fdr.depositNumber}`, period);
+                fdrAccrualsPosted++;
+            }
         }
     }
 
@@ -352,7 +477,7 @@ export async function processDayEnd(job: Job<{ tenantId: string }>) {
         }
     }
 
-    // ── 5. EMI Overdue Marking & LN-005: Pre-EMI Collection (Moratorium) ─────
+    // ── 5. EMI Overdue Marking & Penal Interest Calculation (INT-007) ─────
     const overdueEmis = await prisma.emiSchedule.updateMany({
         where: {
             dueDate: { lt: today },
@@ -361,6 +486,72 @@ export async function processDayEnd(job: Job<{ tenantId: string }>) {
         },
         data: { status: "overdue" },
     });
+
+    // INT-007: Penal Interest Calculation (Platform-scope, Non-compounding)
+    const penalRateConfig = await prisma.systemConfig.findFirst({
+        where: {
+            tenantId: "PLATFORM",
+            key: "loan.penal.interest.rate",
+        },
+    });
+    const penalRatePct = parseFloat(penalRateConfig?.value || "24.00"); // Platform-scope, RBI cap
+
+    const dayCountConfig = await prisma.systemConfig.findFirst({
+        where: {
+            tenantId: "PLATFORM",
+            key: "interest.day.count.convention",
+        },
+    });
+    const convention = (dayCountConfig?.value || "ACTUAL_365") as "ACTUAL_365" | "ACTUAL_ACTUAL";
+    const dayCountDenominator = convention === "ACTUAL_365" ? 365 : 
+        (new Date().getFullYear() % 4 === 0 && new Date().getFullYear() % 100 !== 0) || new Date().getFullYear() % 400 === 0 ? 366 : 365;
+
+    // Get all overdue loans
+    const overdueLoans = await prisma.loan.findMany({
+        where: {
+            tenantId,
+            status: "active",
+        },
+        include: {
+            emiSchedule: {
+                where: {
+                    status: "overdue",
+                },
+            },
+        },
+    });
+
+    let penalInterestAccrued = 0;
+    for (const loan of overdueLoans) {
+        if (loan.emiSchedule.length === 0) continue;
+
+        // Calculate total overdue amount
+        const totalOverdue = loan.emiSchedule.reduce((sum, emi) => {
+            return sum + Number(emi.principalComponent) + Number(emi.interestComponent);
+        }, 0);
+
+        if (totalOverdue > 0) {
+            // Calculate daily penal interest (non-compounding)
+            // Penal Interest = Overdue Amount × Penal Rate (p.a.) × Days Overdue / (100 × Day-Count-Denominator)
+            const oldestOverdueDate = loan.emiSchedule.reduce((oldest, emi) => {
+                return emi.dueDate < oldest ? emi.dueDate : oldest;
+            }, loan.emiSchedule[0].dueDate);
+
+            const daysOverdue = Math.floor((today.getTime() - oldestOverdueDate.getTime()) / (1000 * 60 * 60 * 24));
+            
+            if (daysOverdue > 0) {
+                const dailyPenalInterest = (totalOverdue * penalRatePct * 1) / (100 * dayCountDenominator);
+                const roundedPenalInterest = Math.round(dailyPenalInterest * 100) / 100;
+
+                if (roundedPenalInterest >= 0.01) {
+                    // Store penal interest accrual (separate from principal) - INT-007
+                    await postGl(tenantId, "PENAL_INTEREST", roundedPenalInterest,
+                        `Penal interest accrual — ${loan.loanNumber} (${daysOverdue} days overdue)`, period);
+                    penalInterestAccrued += roundedPenalInterest;
+                }
+            }
+        }
+    }
 
     // LN-005: Collect pre-EMI interest during moratorium period
     const loansInMoratorium = await prisma.loan.findMany({
@@ -533,6 +724,7 @@ export async function processDayEnd(job: Job<{ tenantId: string }>) {
         sweepInsExecuted,
         sweepOutsExecuted,
         overdueEmisMarked: overdueEmis.count,
+        penalInterestAccrued,
         dormantAccountsMarked: dormantUpdate.count,
         overdueSuspenseAlerts: overdueSuspense,
         deafApproachingDeposits: deafApproaching,

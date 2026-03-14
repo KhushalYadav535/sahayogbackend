@@ -570,24 +570,30 @@ router.post("/applications/:id/disburse", authMiddleware, requireTenant, async (
         const loanNumber = generateLoanId(count + 1);
         const period = currentPeriod();
 
-        // Generate EMI schedule (flat rate) - LN-005: Account for moratorium period
-        const monthlyInterest = (disbursedAmount * (interestRate / 100)) / 12;
-        const emi = disbursedAmount / application.tenureMonths + monthlyInterest;
+        // BRD v4.0 INT-006: Generate EMI schedule with rounding mode
+        const { generateEMISchedule } = await import("../../services/emi-schedule.service");
         const moratoriumMonths = application.moratoriumMonths || 0;
         const moratoriumEndDate = moratoriumMonths > 0 ? new Date(Date.now() + moratoriumMonths * 30 * 24 * 60 * 60 * 1000) : null;
         
-        const emiScheduleData = Array.from({ length: application.tenureMonths }, (_, i) => {
-            const dueDate = new Date();
-            // EMI schedule starts after moratorium period
-            dueDate.setMonth(dueDate.getMonth() + moratoriumMonths + i + 1);
-            return {
-                installmentNo: i + 1,
-                dueDate,
-                principal: disbursedAmount / application.tenureMonths,
-                interest: monthlyInterest,
-                totalEmi: emi,
-            };
-        });
+        const emiSchedule = await generateEMISchedule(
+            tenantId,
+            disbursedAmount,
+            interestRate,
+            application.tenureMonths,
+            new Date(),
+            moratoriumMonths
+        );
+
+        const emiScheduleData = emiSchedule.map((item) => ({
+            installmentNo: item.installmentNo,
+            dueDate: item.dueDate,
+            principal: String(item.principalComponent),
+            interest: String(item.interestComponent),
+            totalEmi: String(item.totalEmi),
+            penalAmount: "0",
+            paidAmount: "0",
+            status: "pending",
+        }));
 
         const loan = await prisma.$transaction(async (tx) => {
             const newLoan = await tx.loan.create({
@@ -1082,17 +1088,27 @@ router.post("/:id/restructure", authMiddleware, requireTenant, async (req: AuthR
         // Generate new EMI schedule
         const monthlyInterest = (outstandingPrincipal * (currentRate / 100)) / 12;
         const emi = newEmiAmount || (outstandingPrincipal / newTenure + monthlyInterest);
-        const emiScheduleData = Array.from({ length: newTenure }, (_, i) => {
-            const dueDate = new Date();
-            dueDate.setMonth(dueDate.getMonth() + newMoratoriumMonths + i + 1);
-            return {
-                installmentNo: i + 1,
-                dueDate,
-                principal: outstandingPrincipal / newTenure,
-                interest: monthlyInterest,
-                totalEmi: emi,
-            };
-        });
+        // BRD v4.0 INT-006: Use EMI schedule generator with rounding
+        const { generateEMISchedule } = await import("../../services/emi-schedule.service");
+        const emiSchedule = await generateEMISchedule(
+            tenantId,
+            outstandingPrincipal,
+            Number(loan.interestRate),
+            newTenure,
+            new Date(),
+            newMoratoriumMonths
+        );
+
+        const emiScheduleData = emiSchedule.map((item) => ({
+            installmentNo: item.installmentNo,
+            dueDate: item.dueDate,
+            principal: String(item.principalComponent),
+            interest: String(item.interestComponent),
+            totalEmi: String(item.totalEmi),
+            penalAmount: "0",
+            paidAmount: "0",
+            status: "pending",
+        }));
 
         await prisma.$transaction([
             prisma.emiSchedule.createMany({
@@ -1192,12 +1208,25 @@ router.post("/:id/refinance", authMiddleware, requireTenant, async (req: AuthReq
 
         const monthlyInterest = (newLoanAmount * (newInterestRate / 100)) / 12;
         const emi = newLoanAmount / newTenureMonths + monthlyInterest;
-        const emiScheduleData = Array.from({ length: newTenureMonths }, (_, i) => ({
-            installmentNo: i + 1,
-            dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000),
-            principal: newLoanAmount / newTenureMonths,
-            interest: monthlyInterest,
-            totalEmi: emi,
+        // BRD v4.0 INT-006: Use EMI schedule generator
+        const { generateEMISchedule } = await import("../../services/emi-schedule.service");
+        const emiSchedule = await generateEMISchedule(
+            tenantId,
+            newLoanAmount,
+            newInterestRate,
+            newTenureMonths,
+            new Date(),
+            0
+        );
+        const emiScheduleData = emiSchedule.map((item) => ({
+            installmentNo: item.installmentNo,
+            dueDate: item.dueDate,
+            principal: String(item.principalComponent),
+            interest: String(item.interestComponent),
+            totalEmi: String(item.totalEmi),
+            penalAmount: "0",
+            paidAmount: "0",
+            status: "pending",
         }));
 
         const newLoan = await prisma.$transaction(async (tx) => {
@@ -1633,12 +1662,25 @@ router.post("/group-loans/:id/disburse", authMiddleware, requireTenant, async (r
 
             const monthlyInterest = (loanAmount * (interestRate / 100)) / 12;
             const emi = loanAmount / tenureMonths + monthlyInterest;
-            const emiScheduleData = Array.from({ length: tenureMonths }, (_, i) => ({
-                installmentNo: i + 1,
-                dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000),
-                principal: loanAmount / tenureMonths,
-                interest: monthlyInterest,
-                totalEmi: emi,
+            // BRD v4.0 INT-006: Use EMI schedule generator
+            const { generateEMISchedule } = await import("../../services/emi-schedule.service");
+            const emiSchedule = await generateEMISchedule(
+                tenantId,
+                loanAmount,
+                interestRate,
+                tenureMonths,
+                new Date(),
+                0
+            );
+            const emiScheduleData = emiSchedule.map((item) => ({
+                installmentNo: item.installmentNo,
+                dueDate: item.dueDate,
+                principal: String(item.principalComponent),
+                interest: String(item.interestComponent),
+                totalEmi: String(item.totalEmi),
+                penalAmount: "0",
+                paidAmount: "0",
+                status: "pending",
             }));
 
             const loan = await prisma.$transaction(async (tx) => {

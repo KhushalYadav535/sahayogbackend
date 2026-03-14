@@ -15,47 +15,51 @@ datasource db {
 // ─────────────────────────────────────────────
 
 model Tenant {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   name         String
-  code         String   @unique
+  code         String    @unique
   district     String?
   state        String?
   regNumber    String?
-  plan         String   @default("starter") // starter | pro | enterprise
-  status       String   @default("active")  // trial | active | suspended | inactive | reactivated | offboarded
+  plan         String    @default("starter") // starter | pro | enterprise
+  status       String    @default("active") // trial | active | suspended | inactive | reactivated | offboarded
   trialEndsAt  DateTime?
   offboardedAt DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  members      Member[]
-  sbAccounts   SbAccount[]
-  loans        Loan[]
-  glEntries    GlEntry[]
-  vouchers     Voucher[]
-  glAccounts   GlAccount[]
-  config       SystemConfig[]
-  configVersions TenantConfigVersion[]
-  users        User[]
-  permissionMatrix PermissionMatrix[]
-  deposits     Deposit[]
-  bodDirectors BodDirector[]
-  committees   Committee[]
-  agms         Agm[]
-  resolutions  Resolution[]
-  complianceEvents ComplianceEvent[]
-  bylaws       Bylaw[]
-  meetingMinutes MeetingMinutes[]
-  approvalOverrides ApprovalOverride[]
-  approvalThresholds ApprovalThreshold[]
-  groupLoans       GroupLoan[] // LN-023
-  billingOverride  TenantBilling?
-  credits         TenantCredits?
-  usageSnapshots  TenantUsageSnapshot[]
-  suspenseEntries SuspenseEntry[]
+  members              Member[]
+  sbAccounts           SbAccount[]
+  loans                Loan[]
+  glEntries            GlEntry[]
+  vouchers             Voucher[]
+  glAccounts           GlAccount[]
+  config               SystemConfig[]
+  configVersions       TenantConfigVersion[]
+  users                User[]
+  permissionMatrix     PermissionMatrix[]
+  deposits             Deposit[]
+  bodDirectors         BodDirector[]
+  committees           Committee[]
+  agms                 Agm[]
+  resolutions          Resolution[]
+  complianceEvents     ComplianceEvent[]
+  bylaws               Bylaw[]
+  meetingMinutes       MeetingMinutes[]
+  approvalOverrides    ApprovalOverride[]
+  approvalThresholds   ApprovalThreshold[]
+  groupLoans           GroupLoan[] // LN-023
+  billingOverride      TenantBilling?
+  credits              TenantCredits?
+  usageSnapshots       TenantUsageSnapshot[]
+  suspenseEntries      SuspenseEntry[]
   bankStatementUploads BankStatementUpload[]
-  paymentRequests PaymentRequest[]
-  notificationLogs NotificationLog[]
+  paymentRequests      PaymentRequest[]
+  notificationLogs     NotificationLog[]
+  interestSchemes      InterestScheme[]
+  interestAccruals     InterestAccrual[]
+  memberPhotos         MemberPhoto[]
+  memberSignatures     MemberSignature[]
 
   // ACC-006: Month-End Closing
   closedPeriods String[] @default([]) // Array of closed periods (YYYY-MM format)
@@ -71,24 +75,24 @@ model TenantCredits {
   smsCredits Int      @default(0)
   updatedAt  DateTime @updatedAt
 
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("tenant_credits")
 }
 
 model TenantUsageSnapshot {
-  id               String   @id @default(cuid())
-  tenantId         String
-  period           String   // YYYY-MM
-  activeUsersPeak  Int      @default(0)
-  memberCount      Int      @default(0)
-  txnVolume        Int      @default(0)
-  storageMb        Int      @default(0)
-  aiInvocations    Int      @default(0)
-  apiCalls         Int      @default(0)
-  createdAt        DateTime @default(now())
+  id              String   @id @default(cuid())
+  tenantId        String
+  period          String // YYYY-MM
+  activeUsersPeak Int      @default(0)
+  memberCount     Int      @default(0)
+  txnVolume       Int      @default(0)
+  storageMb       Int      @default(0)
+  aiInvocations   Int      @default(0)
+  apiCalls        Int      @default(0)
+  createdAt       DateTime @default(now())
 
-  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, period])
   @@map("tenant_usage_snapshots")
@@ -102,7 +106,7 @@ model SystemConfig {
   label     String?
   updatedAt DateTime @updatedAt
 
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, key])
   @@map("system_config")
@@ -112,13 +116,13 @@ model SystemConfig {
 model TenantConfigVersion {
   id        String   @id @default(cuid())
   tenantId  String
-  key       String   // e.g. "mda"
-  value     String   // JSON snapshot
+  key       String // e.g. "mda"
+  value     String // JSON snapshot
   version   Int      @default(1)
   createdBy String?
   createdAt DateTime @default(now())
 
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("tenant_config_versions")
 }
@@ -141,34 +145,35 @@ model OtpCode {
 // ─────────────────────────────────────────────
 
 model User {
-  id           String   @id @default(cuid())
-  tenantId     String?
-  email        String   @unique
-  passwordHash String
-  name         String
-  role         String   @default("staff") // superadmin | admin | staff | member
-  status       String   @default("active")
+  id                  String    @id @default(cuid())
+  tenantId            String?
+  email               String    @unique
+  passwordHash        String
+  name                String
+  role                String    @default("staff") // superadmin | admin | staff | member
+  status              String    @default("active")
   // RSK-005: Password Rotation
-  passwordChangedAt DateTime @default(now())
-  passwordExpiresAt DateTime?
-  passwordForceExpire Boolean @default(false)
+  passwordChangedAt   DateTime  @default(now())
+  passwordExpiresAt   DateTime?
+  passwordForceExpire Boolean   @default(false)
   // SEC-002: Multi-Factor Authentication
-  mfaEnabled Boolean @default(false)
-  mfaMethod String? // TOTP | SMS
-  totpSecret String? // Base32 encoded secret for TOTP
-  totpBackupCodes String[] @default([]) // Backup codes for TOTP
-  mfaVerifiedAt DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  mfaEnabled          Boolean   @default(false)
+  mfaMethod           String? // TOTP | SMS
+  totpSecret          String? // Base32 encoded secret for TOTP
+  totpBackupCodes     String[]  @default([]) // Backup codes for TOTP
+  mfaVerifiedAt       DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
-  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
-  auditLogs    AuditLog[]
-  sessions     Session[]
-  passwordHistory PasswordHistory[]
-  dataMaskingLogs DataMaskingLog[]
-  mfaLogs      MfaLog[]
-  roleAssignments RoleAssignmentLog[] @relation("RoleAssigner")
+  tenant             Tenant?             @relation(fields: [tenantId], references: [id])
+  auditLogs          AuditLog[]
+  sessions           Session[]
+  passwordHistory    PasswordHistory[]
+  dataMaskingLogs    DataMaskingLog[]
+  mfaLogs            MfaLog[]
+  roleAssignments    RoleAssignmentLog[] @relation("RoleAssigner")
   roleAssignmentLogs RoleAssignmentLog[]
+  recalculationRequests RecalculationRequest[] @relation("RecalculationRequester")
 
   @@map("users")
 }
@@ -178,94 +183,96 @@ model User {
 // ─────────────────────────────────────────────
 
 model Member {
-  id             String   @id @default(cuid())
-  tenantId       String
-  memberNumber   String
-  firstName      String
-  lastName       String
-  dateOfBirth    DateTime?
-  gender         String?
-  phone          String?
-  email          String?
-  address        String?
-  village        String?
-  district       String?
-  state          String?
-  pincode        String?
-  aadhaarNumber  String?
-  panNumber      String?
-  occupation     String?
-  status         String   @default("active") // active | dormant | exited | deceased | suspended | blacklisted
-  kycStatus      String   @default("pending") // pending | verified | rejected
-  kycVerifiedAt  DateTime?
-  form15Status   String?  // MEM-020: EXEMPT | NOT_EXEMPT
-  form15Fy       String?  // FY when form15 last applied
-  joinDate       DateTime @default(now())
-  exitDate       DateTime?
-  exitReason     String?
-  isMinor        Boolean  @default(false)
-  guardianName   String?
-  majorityDate   DateTime?
+  id                   String    @id @default(cuid())
+  tenantId             String
+  memberNumber         String
+  firstName            String
+  lastName             String
+  dateOfBirth          DateTime?
+  gender               String?
+  phone                String?
+  email                String?
+  address              String?
+  village              String?
+  district             String?
+  state                String?
+  pincode              String?
+  aadhaarNumber        String?
+  panNumber            String?
+  occupation           String?
+  status               String    @default("active") // active | dormant | exited | deceased | suspended | blacklisted
+  kycStatus            String    @default("pending") // pending | verified | rejected
+  kycVerifiedAt        DateTime?
+  form15Status         String? // MEM-020: EXEMPT | NOT_EXEMPT
+  form15Fy             String? // FY when form15 last applied
+  joinDate             DateTime  @default(now())
+  exitDate             DateTime?
+  exitReason           String?
+  isMinor              Boolean   @default(false)
+  guardianName         String?
+  majorityDate         DateTime?
   // MEM-012: Joint Membership
-  jointMemberId String?  // Link to joint holder member
-  jointMode     String?  // EITHER_OR_SURVIVOR | JOINTLY
+  jointMemberId        String? // Link to joint holder member
+  jointMode            String? // EITHER_OR_SURVIVOR | JOINTLY
   // MEM-014: KYC Re-validation
-  kycLastValidatedAt DateTime?  // Last KYC validation date
-  kycNextValidationDue DateTime?  // Next validation due date
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  kycLastValidatedAt   DateTime? // Last KYC validation date
+  kycNextValidationDue DateTime? // Next validation due date
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  tenant         Tenant         @relation(fields: [tenantId], references: [id])
-  shareLedger    ShareLedger[]
-  nominees       Nominee[]
-  sbAccounts     SbAccount[]
-  loans          Loan[]
-  loanApplications LoanApplication[]
-  deposits       Deposit[]
-  jointMember    Member?  @relation("JointMembers", fields: [jointMemberId], references: [id])
-  jointMembers   Member[] @relation("JointMembers")
-  groupLoanMembers GroupLoanMember[]
-  amlAlerts       AmlAlert[]
-  dataAccessRequests DataAccessRequest[]
+  tenant                 Tenant                  @relation(fields: [tenantId], references: [id])
+  shareLedger            ShareLedger[]
+  nominees               Nominee[]
+  sbAccounts             SbAccount[]
+  loans                  Loan[]
+  loanApplications       LoanApplication[]
+  deposits               Deposit[]
+  jointMember            Member?                 @relation("JointMembers", fields: [jointMemberId], references: [id])
+  jointMembers           Member[]                @relation("JointMembers")
+  groupLoanMembers       GroupLoanMember[]
+  amlAlerts              AmlAlert[]
+  dataAccessRequests     DataAccessRequest[]
   dataCorrectionRequests DataCorrectionRequest[]
-  dataErasureRequests DataErasureRequest[]
-  consentRecords ConsentRecord[]
-  nachMandates NachMandate[]
-  notificationLogs NotificationLog[]
+  dataErasureRequests    DataErasureRequest[]
+  consentRecords         ConsentRecord[]
+  nachMandates           NachMandate[]
+  notificationLogs       NotificationLog[]
+  photos                 MemberPhoto[]
+  signatures             MemberSignature[]
 
   @@unique([tenantId, memberNumber])
   @@map("members")
 }
 
 model ShareLedger {
-  id            String   @id @default(cuid())
-  memberId      String
-  tenantId      String
-  transactionType String  // purchase | refund | transfer
-  shares        Int
-  faceValue     Decimal  @db.Decimal(10,2)
-  amount        Decimal  @db.Decimal(12,2)
-  date          DateTime @default(now())
-  remarks       String?
-  createdAt     DateTime @default(now())
+  id              String   @id @default(cuid())
+  memberId        String
+  tenantId        String
+  transactionType String // purchase | refund | transfer
+  shares          Int
+  faceValue       Decimal  @db.Decimal(10, 2)
+  amount          Decimal  @db.Decimal(12, 2)
+  date            DateTime @default(now())
+  remarks         String?
+  createdAt       DateTime @default(now())
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@map("share_ledger")
 }
 
 model Nominee {
-  id            String   @id @default(cuid())
-  memberId      String
-  name          String
-  relationship  String
-  dateOfBirth   DateTime?
-  sharePercent  Int      @default(100)
-  phone         String?
-  address       String?
-  createdAt     DateTime @default(now())
+  id           String    @id @default(cuid())
+  memberId     String
+  name         String
+  relationship String
+  dateOfBirth  DateTime?
+  sharePercent Int       @default(100)
+  phone        String?
+  address      String?
+  createdAt    DateTime  @default(now())
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@map("nominees")
 }
@@ -275,44 +282,44 @@ model Nominee {
 // ─────────────────────────────────────────────
 
 model SbAccount {
-  id                 String   @id @default(cuid())
+  id                 String    @id @default(cuid())
   tenantId           String
   memberId           String
   accountNumber      String
-  accountType        String   @default("savings") // savings | current | fd | rd
-  balance            Decimal  @db.Decimal(15,2) @default(0)
-  interestRate       Decimal  @db.Decimal(5,2)  @default(3.5)
-  operationMode      String   @default("SINGLE") // SINGLE | EITHER_OR_SURVIVOR | JOINTLY
+  accountType        String    @default("savings") // savings | current | fd | rd
+  balance            Decimal   @default(0) @db.Decimal(15, 2)
+  interestRate       Decimal   @default(3.5) @db.Decimal(5, 2)
+  operationMode      String    @default("SINGLE") // SINGLE | EITHER_OR_SURVIVOR | JOINTLY
   nominee            String?
-  status             String   @default("active") // active | dormant | closed
+  status             String    @default("active") // active | dormant | closed
   lastActivityAt     DateTime? @default(now()) // SB-005 dormancy
-  kycRefreshRequired Boolean  @default(false)  // COA: required for dormancy reactivation
-  openedAt           DateTime @default(now())
+  kycRefreshRequired Boolean   @default(false) // COA: required for dormancy reactivation
+  openedAt           DateTime  @default(now())
   closedAt           DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  tenant          Tenant       @relation(fields: [tenantId], references: [id])
-  member          Member       @relation(fields: [memberId], references: [id])
-  transactions    Transaction[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  member       Member        @relation(fields: [memberId], references: [id])
+  transactions Transaction[]
 
   @@unique([tenantId, accountNumber])
   @@map("sb_accounts")
 }
 
 model Transaction {
-  id              String   @id @default(cuid())
-  accountId       String
-  type            String   // credit | debit
-  category        String   // deposit | withdrawal | transfer | interest | emi | fee
-  amount          Decimal  @db.Decimal(15,2)
-  balanceAfter    Decimal  @db.Decimal(15,2)
-  reference       String?
-  remarks         String?
-  processedAt     DateTime @default(now())
-  createdAt       DateTime @default(now())
+  id           String   @id @default(cuid())
+  accountId    String
+  type         String // credit | debit
+  category     String // deposit | withdrawal | transfer | interest | emi | fee
+  amount       Decimal  @db.Decimal(15, 2)
+  balanceAfter Decimal  @db.Decimal(15, 2)
+  reference    String?
+  remarks      String?
+  processedAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
 
-  account         SbAccount @relation(fields: [accountId], references: [id])
+  account SbAccount @relation(fields: [accountId], references: [id])
 
   @@map("transactions")
 }
@@ -322,33 +329,33 @@ model Transaction {
 // ─────────────────────────────────────────────
 
 model Deposit {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   tenantId        String
   memberId        String
-  depositNumber   String   // unique per tenant
-  depositType     String   // fd | rd | mis
-  principal       Decimal  @db.Decimal(15,2)
-  interestRate    Decimal  @db.Decimal(5,2)
-  tenureMonths    Int      // FDR/MIS: tenure; RD: installments
-  compoundingFreq String   @default("quarterly") // monthly | quarterly | half_yearly | yearly
+  depositNumber   String // unique per tenant
+  depositType     String // fd | rd | mis
+  principal       Decimal   @db.Decimal(15, 2)
+  interestRate    Decimal   @db.Decimal(5, 2)
+  tenureMonths    Int // FDR/MIS: tenure; RD: installments
+  compoundingFreq String    @default("quarterly") // monthly | quarterly | half_yearly | yearly
   maturityDate    DateTime?
-  maturityAmount  Decimal? @db.Decimal(15,2)  // calculated at maturity
-  rdMonthlyAmount Decimal? @db.Decimal(15,2)  // RD installment
-  status          String   @default("active")  // active | matured | prematurely_closed | lien_marked | dormant | unclaimed
-  openedAt        DateTime @default(now())
+  maturityAmount  Decimal?  @db.Decimal(15, 2) // calculated at maturity
+  rdMonthlyAmount Decimal?  @db.Decimal(15, 2) // RD installment
+  status          String    @default("active") // active | matured | prematurely_closed | lien_marked | dormant | unclaimed
+  openedAt        DateTime  @default(now())
   closedAt        DateTime?
   // CoA fields
-  isSeniorCitizen   Boolean  @default(false)   // COA: auto-detected from member DOB (age >= 60)
-  lienLoanId        String?                     // COA: DEP-010 — FDR lien for Loan Against Deposit
-  tdsDeducted       Decimal? @db.Decimal(15,2)  // COA: cumulative TDS deducted on this deposit
-  tdsApplicable     Boolean  @default(false)    // COA: whether TDS applies this FY
-  form15Exempt      Boolean  @default(false)    // COA: Form 15G/H submitted
-  accruedInterest   Decimal  @db.Decimal(15,2) @default(0) // running accrued interest
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  isSeniorCitizen Boolean   @default(false) // COA: auto-detected from member DOB (age >= 60)
+  lienLoanId      String? // COA: DEP-010 — FDR lien for Loan Against Deposit
+  tdsDeducted     Decimal?  @db.Decimal(15, 2) // COA: cumulative TDS deducted on this deposit
+  tdsApplicable   Boolean   @default(false) // COA: whether TDS applies this FY
+  form15Exempt    Boolean   @default(false) // COA: Form 15G/H submitted
+  accruedInterest Decimal   @default(0) @db.Decimal(15, 2) // running accrued interest
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
-  member          Member   @relation(fields: [memberId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@unique([tenantId, depositNumber])
   @@map("deposits")
@@ -359,158 +366,158 @@ model Deposit {
 // ─────────────────────────────────────────────
 
 model LoanApplication {
-  id              String   @id @default(cuid())
-  tenantId        String
-  memberId        String
+  id                String    @id @default(cuid())
+  tenantId          String
+  memberId          String
   guarantorMemberId String? // LN-014 guarantor (if existing member)
-  loanType        String   // personal | agricultural | business | housing | education | gold
-  loanSubType     String?  // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
-  amountRequested Decimal  @db.Decimal(15,2)
-  purpose         String?
-  tenureMonths    Int
-  moratoriumMonths Int    @default(0) // LN-005
-  riskScore       Decimal? @db.Decimal(5,2)
-  riskCategory    String?  // LOW | MEDIUM | HIGH | GREEN | AMBER | RED
-  status          String   @default("pending") // pending | approved | rejected | disbursed
-  remarks         String?
-  appliedAt       DateTime @default(now())
-  reviewedAt      DateTime?
-  reviewedBy      String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  loanType          String // personal | agricultural | business | housing | education | gold
+  loanSubType       String? // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
+  amountRequested   Decimal   @db.Decimal(15, 2)
+  purpose           String?
+  tenureMonths      Int
+  moratoriumMonths  Int       @default(0) // LN-005
+  riskScore         Decimal?  @db.Decimal(5, 2)
+  riskCategory      String? // LOW | MEDIUM | HIGH | GREEN | AMBER | RED
+  status            String    @default("pending") // pending | approved | rejected | disbursed
+  remarks           String?
+  appliedAt         DateTime  @default(now())
+  reviewedAt        DateTime?
+  reviewedBy        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  member          Member   @relation(fields: [memberId], references: [id])
-  loan            Loan?
+  member      Member  @relation(fields: [memberId], references: [id])
+  loan        Loan?
   // LN-023: Group Loan/JLG
-  groupLoanId     String? // Link to GroupLoan if part of JLG application
+  groupLoanId String? // Link to GroupLoan if part of JLG application
 
   @@map("loan_applications")
 }
 
 // ─── LN-023: Group Loan / JLG (Joint Liability Group) ──────────────────────────
 model GroupLoan {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   tenantId        String
   groupName       String
-  groupCode       String   // Unique group identifier
-  groupType       String   @default("JLG") // JLG | SHG | OTHER
-  totalLoanAmount Decimal  @db.Decimal(15,2)
-  status          String   @default("active") // active | closed | npa
-  formedDate      DateTime @default(now())
+  groupCode       String // Unique group identifier
+  groupType       String    @default("JLG") // JLG | SHG | OTHER
+  totalLoanAmount Decimal   @db.Decimal(15, 2)
+  status          String    @default("active") // active | closed | npa
+  formedDate      DateTime  @default(now())
   closedDate      DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
-  members         GroupLoanMember[]
-  loans           Loan[]
+  tenant  Tenant            @relation(fields: [tenantId], references: [id])
+  members GroupLoanMember[]
+  loans   Loan[]
 
   @@unique([tenantId, groupCode])
   @@map("group_loans")
 }
 
 model GroupLoanMember {
-  id              String   @id @default(cuid())
-  groupLoanId     String
-  memberId        String
-  individualLoanAmount Decimal @db.Decimal(15,2)
-  role            String?  // LEADER | MEMBER
-  isActive        Boolean  @default(true)
-  joinedAt        DateTime @default(now())
-  exitedAt        DateTime?
+  id                   String    @id @default(cuid())
+  groupLoanId          String
+  memberId             String
+  individualLoanAmount Decimal   @db.Decimal(15, 2)
+  role                 String? // LEADER | MEMBER
+  isActive             Boolean   @default(true)
+  joinedAt             DateTime  @default(now())
+  exitedAt             DateTime?
 
-  groupLoan       GroupLoan @relation(fields: [groupLoanId], references: [id])
-  member          Member    @relation(fields: [memberId], references: [id])
+  groupLoan GroupLoan @relation(fields: [groupLoanId], references: [id])
+  member    Member    @relation(fields: [memberId], references: [id])
 
   @@unique([groupLoanId, memberId])
   @@map("group_loan_members")
 }
 
 model Loan {
-  id              String   @id @default(cuid())
-  tenantId        String
-  memberId        String
-  applicationId   String   @unique
-  loanNumber      String
-  loanType        String
-  principalAmount Decimal  @db.Decimal(15,2)
-  interestRate    Decimal  @db.Decimal(5,2)
-  penalRate       Decimal? @db.Decimal(5,2) // LN-006 penal interest
-  tenureMonths    Int
-  moratoriumMonths Int    @default(0) // LN-005
-  disbursedAmount Decimal  @db.Decimal(15,2)
-  disbursedAt     DateTime?
-  outstandingPrincipal Decimal @db.Decimal(15,2) @default(0)
-  outstandingInterest  Decimal @db.Decimal(15,2) @default(0)
-  outstandingPenal     Decimal @db.Decimal(15,2) @default(0) // LN-006
-  status          String   @default("active") // active | closed | npa | written-off
-  npaCategory     String?  // LN-011: standard | sma_0 | sma_1 | sub_standard | doubtful_1 | doubtful_2 | doubtful_3 | loss
-  npaDpd          Int?     // COA: days past due for oldest overdue EMI
-  npaProvision    Decimal? @db.Decimal(15,2) // COA: provisioned amount
-  npaDate         DateTime?
-  writeOffDate    DateTime?
-  writeOffAmount  Decimal? @db.Decimal(15,2)
-  recoveredAmount Decimal? @db.Decimal(15,2) @default(0)
+  id                     String    @id @default(cuid())
+  tenantId               String
+  memberId               String
+  applicationId          String    @unique
+  loanNumber             String
+  loanType               String
+  principalAmount        Decimal   @db.Decimal(15, 2)
+  interestRate           Decimal   @db.Decimal(5, 2)
+  penalRate              Decimal?  @db.Decimal(5, 2) // LN-006 penal interest
+  tenureMonths           Int
+  moratoriumMonths       Int       @default(0) // LN-005
+  disbursedAmount        Decimal   @db.Decimal(15, 2)
+  disbursedAt            DateTime?
+  outstandingPrincipal   Decimal   @default(0) @db.Decimal(15, 2)
+  outstandingInterest    Decimal   @default(0) @db.Decimal(15, 2)
+  outstandingPenal       Decimal   @default(0) @db.Decimal(15, 2) // LN-006
+  status                 String    @default("active") // active | closed | npa | written-off
+  npaCategory            String? // LN-011: standard | sma_0 | sma_1 | sub_standard | doubtful_1 | doubtful_2 | doubtful_3 | loss
+  npaDpd                 Int? // COA: days past due for oldest overdue EMI
+  npaProvision           Decimal?  @db.Decimal(15, 2) // COA: provisioned amount
+  npaDate                DateTime?
+  writeOffDate           DateTime?
+  writeOffAmount         Decimal?  @db.Decimal(15, 2)
+  recoveredAmount        Decimal?  @default(0) @db.Decimal(15, 2)
   // CoA fields
-  loanSubType     String?  // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
-  glCode          String?  // COA: assigned at disbursement from LOAN_GL_CODES
-  subventionRate  Decimal? @db.Decimal(5,4) // COA: KCC 3% subvention
-  goldValue       Decimal? @db.Decimal(15,2) // COA: appraised gold value (for gold loans)
-  collateralFdrId String?  // COA: FDR ID used as collateral (for LAD)
-  householdIncome Decimal? @db.Decimal(15,2) // COA: declared income for microfinance cap
-  bodResolutionRef String? // COA: BOD resolution reference required for write-off
+  loanSubType            String? // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
+  glCode                 String? // COA: assigned at disbursement from LOAN_GL_CODES
+  subventionRate         Decimal?  @db.Decimal(5, 4) // COA: KCC 3% subvention
+  goldValue              Decimal?  @db.Decimal(15, 2) // COA: appraised gold value (for gold loans)
+  collateralFdrId        String? // COA: FDR ID used as collateral (for LAD)
+  householdIncome        Decimal?  @db.Decimal(15, 2) // COA: declared income for microfinance cap
+  bodResolutionRef       String? // COA: BOD resolution reference required for write-off
   // LN-010: Restructuring/Refinance
-  restructureCount Int @default(0) // Track number of restructures
+  restructureCount       Int       @default(0) // Track number of restructures
   restructuredFromLoanId String? // Link to original loan if refinanced
-  refinancedToLoanId String? // Link to new loan if this was refinanced
-  isRestructured Boolean @default(false) // Regulatory flag for NABARD reporting
+  refinancedToLoanId     String? // Link to new loan if this was refinanced
+  isRestructured         Boolean   @default(false) // Regulatory flag for NABARD reporting
   // LN-005: Moratorium tracking
-  moratoriumEndDate DateTime? // End date of moratorium period
+  moratoriumEndDate      DateTime? // End date of moratorium period
   // LN-014: Guarantor
-  guarantorMemberId String? // Member ID if guarantor is existing member
-  guarantorName String? // External guarantor name
-  guarantorIncome Decimal? @db.Decimal(15,2) // Guarantor income/networth
-  guaranteeAmount Decimal? @db.Decimal(15,2) // Guarantee amount
-  guaranteeStartDate DateTime? // Guarantee start date
+  guarantorMemberId      String? // Member ID if guarantor is existing member
+  guarantorName          String? // External guarantor name
+  guarantorIncome        Decimal?  @db.Decimal(15, 2) // Guarantor income/networth
+  guaranteeAmount        Decimal?  @db.Decimal(15, 2) // Guarantee amount
+  guaranteeStartDate     DateTime? // Guarantee start date
   // LN-023: Group Loan/JLG
-  groupLoanId String? // Link to GroupLoan if part of JLG
+  groupLoanId            String? // Link to GroupLoan if part of JLG
   // LN-024: CIBIL/Experian
-  cibilScore Decimal? @db.Decimal(5,2) // CIBIL credit score
-  cibilReportDate DateTime? // Date when CIBIL report was fetched
-  cibilReportId String? // CIBIL report reference ID
-  experianScore Decimal? @db.Decimal(5,2) // Experian credit score
-  experianReportDate DateTime? // Date when Experian report was fetched
-  experianReportId String? // Experian report reference ID
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  cibilScore             Decimal?  @db.Decimal(5, 2) // CIBIL credit score
+  cibilReportDate        DateTime? // Date when CIBIL report was fetched
+  cibilReportId          String? // CIBIL report reference ID
+  experianScore          Decimal?  @db.Decimal(5, 2) // Experian credit score
+  experianReportDate     DateTime? // Date when Experian report was fetched
+  experianReportId       String? // Experian report reference ID
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  tenant          Tenant          @relation(fields: [tenantId], references: [id])
-  member          Member          @relation(fields: [memberId], references: [id])
-  application     LoanApplication @relation(fields: [applicationId], references: [id])
-  emiSchedule     EmiSchedule[]
-  restructuredFrom Loan? @relation("LoanRestructuring", fields: [restructuredFromLoanId], references: [id])
-  refinancedTo Loan[] @relation("LoanRestructuring")
-  groupLoan       GroupLoan? @relation(fields: [groupLoanId], references: [id])
+  tenant           Tenant          @relation(fields: [tenantId], references: [id])
+  member           Member          @relation(fields: [memberId], references: [id])
+  application      LoanApplication @relation(fields: [applicationId], references: [id])
+  emiSchedule      EmiSchedule[]
+  restructuredFrom Loan?           @relation("LoanRestructuring", fields: [restructuredFromLoanId], references: [id])
+  refinancedTo     Loan[]          @relation("LoanRestructuring")
+  groupLoan        GroupLoan?      @relation(fields: [groupLoanId], references: [id])
 
   @@unique([tenantId, loanNumber])
   @@map("loans")
 }
 
 model EmiSchedule {
-  id              String   @id @default(cuid())
-  loanId          String
-  installmentNo   Int
-  dueDate         DateTime
-  principal       Decimal  @db.Decimal(15,2)
-  interest        Decimal  @db.Decimal(15,2)
-  penalAmount     Decimal  @db.Decimal(15,2) @default(0) // LN-006
-  totalEmi        Decimal  @db.Decimal(15,2)
-  paidAmount      Decimal  @db.Decimal(15,2) @default(0)
-  paidAt          DateTime?
-  status          String   @default("pending") // pending | paid | partial | overdue
-  createdAt       DateTime @default(now())
+  id            String    @id @default(cuid())
+  loanId        String
+  installmentNo Int
+  dueDate       DateTime
+  principal     Decimal   @db.Decimal(15, 2)
+  interest      Decimal   @db.Decimal(15, 2)
+  penalAmount   Decimal   @default(0) @db.Decimal(15, 2) // LN-006
+  totalEmi      Decimal   @db.Decimal(15, 2)
+  paidAmount    Decimal   @default(0) @db.Decimal(15, 2)
+  paidAt        DateTime?
+  status        String    @default("pending") // pending | paid | partial | overdue
+  createdAt     DateTime  @default(now())
 
-  loan            Loan     @relation(fields: [loanId], references: [id])
+  loan Loan @relation(fields: [loanId], references: [id])
 
   @@map("emi_schedule")
 }
@@ -520,63 +527,63 @@ model EmiSchedule {
 // ─────────────────────────────────────────────
 
 model GlAccount {
-  id          String   @id @default(cuid())
-  tenantId    String
-  code        String
-  name        String
-  type        String   // ASSET | LIABILITY | EQUITY | INCOME | EXPENSE
-  parentCode  String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(cuid())
+  tenantId   String
+  code       String
+  name       String
+  type       String // ASSET | LIABILITY | EQUITY | INCOME | EXPENSE
+  parentCode String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, code])
   @@map("gl_accounts")
 }
 
 model GlEntry {
-  id            String   @id @default(cuid())
-  tenantId      String
-  voucherId     String?
-  glCode        String
-  glName        String
-  debit         Decimal  @db.Decimal(15,2) @default(0)
-  credit        Decimal  @db.Decimal(15,2) @default(0)
-  narration     String?
-  postingDate   DateTime
-  period        String   // YYYY-MM
-  createdAt     DateTime @default(now())
+  id          String   @id @default(cuid())
+  tenantId    String
+  voucherId   String?
+  glCode      String
+  glName      String
+  debit       Decimal  @default(0) @db.Decimal(15, 2)
+  credit      Decimal  @default(0) @db.Decimal(15, 2)
+  narration   String?
+  postingDate DateTime
+  period      String // YYYY-MM
+  createdAt   DateTime @default(now())
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  voucher       Voucher? @relation(fields: [voucherId], references: [id])
+  tenant  Tenant   @relation(fields: [tenantId], references: [id])
+  voucher Voucher? @relation(fields: [voucherId], references: [id])
 
   @@map("gl_entries")
 }
 
 model Voucher {
-  id            String   @id @default(cuid())
-  tenantId      String
-  voucherNumber String
-  voucherType   String   // JV | RV | PV | BV | AUDIT_ADJ (Journal/Receipt/Payment/Bank/Audit Adjustment)
-  date          DateTime
-  narration     String?
-  totalAmount   Decimal  @db.Decimal(15,2)
-  status        String   @default("draft") // draft | pending | approved | posted | reversed
-  makerUserId   String?
-  checkerUserId String?
-  approvedAt    DateTime?
-  reversalOf    String?
+  id                   String    @id @default(cuid())
+  tenantId             String
+  voucherNumber        String
+  voucherType          String // JV | RV | PV | BV | AUDIT_ADJ (Journal/Receipt/Payment/Bank/Audit Adjustment)
+  date                 DateTime
+  narration            String?
+  totalAmount          Decimal   @db.Decimal(15, 2)
+  status               String    @default("draft") // draft | pending | approved | posted | reversed
+  makerUserId          String?
+  checkerUserId        String?
+  approvedAt           DateTime?
+  reversalOf           String?
   // ACC-010: Audit Adjustment Entries
-  isAuditAdjustment Boolean @default(false) // Tagged as AUDIT_ADJ
+  isAuditAdjustment    Boolean   @default(false) // Tagged as AUDIT_ADJ
   auditAccessStartDate DateTime? // Time-limited access start
-  auditAccessEndDate DateTime? // Time-limited access end
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  auditAccessEndDate   DateTime? // Time-limited access end
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  tenant        Tenant    @relation(fields: [tenantId], references: [id])
-  glEntries     GlEntry[]
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  glEntries GlEntry[]
 
   @@unique([tenantId, voucherNumber])
   @@map("vouchers")
@@ -587,61 +594,61 @@ model Voucher {
 // ─────────────────────────────────────────────
 
 model AuditLog {
-  id         String   @id @default(cuid())
-  tenantId   String?
-  userId     String?
-  action     String
-  entity     String
-  entityId   String?
-  oldData    Json?
-  newData    Json?
-  ipAddress  String?
-  userAgent  String?
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  tenantId  String?
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  oldData   Json?
+  newData   Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
 
-  user       User?    @relation(fields: [userId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
 
   @@map("audit_log")
 }
 
 model AiAuditLog {
-  id          String   @id @default(cuid())
-  tenantId    String?
-  userId      String?
-  feature     String   // duplicate_detection | risk_scoring | etc
-  inputData   Json?
-  outputData  Json?
-  confidence  Decimal? @db.Decimal(5,4)
-  latencyMs   Int?
-  success     Boolean  @default(true)
-  errorMsg    String?
+  id                 String   @id @default(cuid())
+  tenantId           String?
+  userId             String?
+  feature            String // duplicate_detection | risk_scoring | etc
+  inputData          Json?
+  outputData         Json?
+  confidence         Decimal? @db.Decimal(5, 4)
+  latencyMs          Int?
+  success            Boolean  @default(true)
+  errorMsg           String?
   // AI-014: Explainable AI
-  explanationText String? // Human-readable explanation
-  modelVersion String? @default("v1.0")
+  explanationText    String? // Human-readable explanation
+  modelVersion       String?  @default("v1.0")
   // AI-016: Human Override
-  humanOverrideFlag Boolean @default(false)
-  overrideReason String?
+  humanOverrideFlag  Boolean  @default(false)
+  overrideReason     String?
   overrideReasonCode String? // From exception.override.reason.codes metadata
-  createdAt   DateTime @default(now())
+  createdAt          DateTime @default(now())
 
   @@map("ai_audit_log")
 }
 
 // AI-015: AI Model Versioning & Rollback
 model AiModel {
-  id                String   @id @default(cuid())
-  modelId           String   // loan_risk_scoring | fraud_scoring | etc
-  version           String   // v1.0 | v1.1 | etc
-  algorithm         String   // XGBoost | LightGBM | IsolationForest | etc
-  trainingDate      DateTime
-  trainingDataRange String?  // "2024-01-01 to 2024-12-31"
-  performanceMetrics Json?   // { f1: 0.85, auc: 0.92 }
-  deployedBy        String?
-  deployedAt        DateTime @default(now())
-  isActive          Boolean  @default(true)
-  rollbackTo        String?  // Previous version ID if rolled back
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  modelId            String // loan_risk_scoring | fraud_scoring | etc
+  version            String // v1.0 | v1.1 | etc
+  algorithm          String // XGBoost | LightGBM | IsolationForest | etc
+  trainingDate       DateTime
+  trainingDataRange  String? // "2024-01-01 to 2024-12-31"
+  performanceMetrics Json? // { f1: 0.85, auc: 0.92 }
+  deployedBy         String?
+  deployedAt         DateTime @default(now())
+  isActive           Boolean  @default(true)
+  rollbackTo         String? // Previous version ID if rolled back
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@unique([modelId, version])
   @@map("ai_models")
@@ -655,7 +662,7 @@ model BodDirector {
   id           String   @id @default(cuid())
   tenantId     String
   name         String
-  designation  String   // President | Secretary | Treasurer | Member
+  designation  String // President | Secretary | Treasurer | Member
   din          String?
   pan          String?
   electionDate DateTime
@@ -665,46 +672,46 @@ model BodDirector {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("bod_directors")
 }
 
 model Committee {
-  id              String   @id @default(cuid())
-  tenantId        String
-  name            String
-  committeeType   String   // LOAN_COMMITTEE | AUDIT_COMMITTEE | AGM_COMMITTEE | FINANCE_COMMITTEE
-  mandate         String?
-  memberIds      Json     // ["bodId1", "bodId2"]
-  quorumRequired  Int      @default(2)
-  meetingFreq     String?  // monthly | quarterly
-  status          String   @default("active")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  tenantId       String
+  name           String
+  committeeType  String // LOAN_COMMITTEE | AUDIT_COMMITTEE | AGM_COMMITTEE | FINANCE_COMMITTEE
+  mandate        String?
+  memberIds      Json // ["bodId1", "bodId2"]
+  quorumRequired Int      @default(2)
+  meetingFreq    String? // monthly | quarterly
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("committees")
 }
 
 model Agm {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   tenantId      String
-  fiscalYear    String   // 2024-25
+  fiscalYear    String // 2024-25
   scheduledDate DateTime
   noticeDate    DateTime?
   noticeSentAt  DateTime?
   venue         String?
-  agendaItems   Json?    // [{id, title, description, order}]
-  attendance    Json?    // [{memberId, memberName, present: boolean}]
+  agendaItems   Json? // [{id, title, description, order}]
+  attendance    Json? // [{memberId, memberName, present: boolean}]
   minutesDoc    String?
-  status        String   @default("scheduled") // scheduled | notice_sent | conducted | minutes_approved
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  status        String    @default("scheduled") // scheduled | notice_sent | conducted | minutes_approved
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  resolutions   Resolution[]
+  tenant         Tenant           @relation(fields: [tenantId], references: [id])
+  resolutions    Resolution[]
   meetingMinutes MeetingMinutes[]
 
   @@map("agms")
@@ -714,36 +721,36 @@ model Resolution {
   id           String   @id @default(cuid())
   tenantId     String
   agmId        String?
-  referenceNo   String
+  referenceNo  String
   date         DateTime
-  meetingType  String   // AGM | BOD | COMMITTEE
-  status       String   // PASSED | REJECTED | DEFERRED
+  meetingType  String // AGM | BOD | COMMITTEE
+  status       String // PASSED | REJECTED | DEFERRED
   subject      String
   description  String?
   documentPath String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant       Tenant   @relation(fields: [tenantId], references: [id])
-  agm          Agm?     @relation(fields: [agmId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  agm    Agm?   @relation(fields: [agmId], references: [id])
 
   @@unique([tenantId, referenceNo])
   @@map("resolutions")
 }
 
 model ComplianceEvent {
-  id            String   @id @default(cuid())
-  tenantId      String
-  eventType     String   // AGM | NABARD_RETURN | REGISTRAR_RETURN | TDS_PAYMENT | TDS_26Q | AUDIT | BOD_ELECTION
-  dueDate       DateTime
+  id              String    @id @default(cuid())
+  tenantId        String
+  eventType       String // AGM | NABARD_RETURN | REGISTRAR_RETURN | TDS_PAYMENT | TDS_26Q | AUDIT | BOD_ELECTION
+  dueDate         DateTime
   responsibleRole String?
-  status        String   @default("pending") // pending | completed | overdue
-  lastAlertAt   DateTime?
-  metadata      Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  status          String    @default("pending") // pending | completed | overdue
+  lastAlertAt     DateTime?
+  metadata        Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("compliance_events")
 }
@@ -755,7 +762,7 @@ model Bylaw {
   version       Int      @default(1)
   title         String
   documentPath  String
-  resolutionRef String?  // BOD resolution reference for amendments
+  resolutionRef String? // BOD resolution reference for amendments
   effectiveDate DateTime @default(now())
   status        String   @default("active") // active | superseded
   createdAt     DateTime @default(now())
@@ -763,55 +770,55 @@ model Bylaw {
   createdBy     String?
   updatedBy     String?
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("bylaws")
 }
 
 // ─── GOV-007: Meeting Minutes & Action Items ──────────────────────────────────
 model MeetingMinutes {
-  id            String   @id @default(cuid())
-  tenantId      String
-  meetingType   String   // BOARD | AGM | COMMITTEE
-  meetingId     String   // AGM ID or Committee ID
-  meetingDate   DateTime
-  minutesType   String   @default("DRAFT") // DRAFT | FINALIZED
-  attendees     Json     // [{memberId, name, role, present}]
-  agenda        Json     // [{id, title, description, decisions}]
-  decisions     Json?    // string[]
-  actionItems   Json?    // [{id, description, responsible, dueDate, status}]
-  attachments   Json?    // [{fileName, fileUrl}]
-  sha256Hash    String?  // GOV-015: For tamper detection
-  digitallySigned Boolean @default(false)
-  signedAt      DateTime?
-  signedBy      String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  createdBy     String?
+  id              String    @id @default(cuid())
+  tenantId        String
+  meetingType     String // BOARD | AGM | COMMITTEE
+  meetingId       String // AGM ID or Committee ID
+  meetingDate     DateTime
+  minutesType     String    @default("DRAFT") // DRAFT | FINALIZED
+  attendees       Json // [{memberId, name, role, present}]
+  agenda          Json // [{id, title, description, decisions}]
+  decisions       Json? // string[]
+  actionItems     Json? // [{id, description, responsible, dueDate, status}]
+  attachments     Json? // [{fileName, fileUrl}]
+  sha256Hash      String? // GOV-015: For tamper detection
+  digitallySigned Boolean   @default(false)
+  signedAt        DateTime?
+  signedBy        String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  createdBy       String?
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  agm           Agm?     @relation(fields: [meetingId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  agm    Agm?   @relation(fields: [meetingId], references: [id])
 
   @@map("meeting_minutes")
 }
 
 // ─── GOV-010: Exception Override Tracking ──────────────────────────────────────
 model ApprovalOverride {
-  id                String   @id @default(cuid())
-  tenantId          String
-  overrideId        String   // Unique override reference
-  ruleBypassed      String   // Which approval rule was bypassed
-  originalApprover  String   // Who should have approved
-  overrideAuthorizer String   // Who authorized the override
-  reasonCode        String   // From exception.override.reason.codes metadata
-  reasonDescription String?
-  transactionType   String   // LOAN | GL_ENTRY | REFUND | MEMBER_STATUS | DEPOSIT
-  transactionId     String?
-  amount            Decimal? @db.Decimal(15,2)
-  createdAt         DateTime @default(now())
-  createdBy         String?
+  id                 String   @id @default(cuid())
+  tenantId           String
+  overrideId         String // Unique override reference
+  ruleBypassed       String // Which approval rule was bypassed
+  originalApprover   String // Who should have approved
+  overrideAuthorizer String // Who authorized the override
+  reasonCode         String // From exception.override.reason.codes metadata
+  reasonDescription  String?
+  transactionType    String // LOAN | GL_ENTRY | REFUND | MEMBER_STATUS | DEPOSIT
+  transactionId      String?
+  amount             Decimal? @db.Decimal(15, 2)
+  createdAt          DateTime @default(now())
+  createdBy          String?
 
-  tenant            Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, overrideId])
   @@map("approval_overrides")
@@ -821,16 +828,16 @@ model ApprovalOverride {
 model ApprovalThreshold {
   id              String   @id @default(cuid())
   tenantId        String
-  transactionType String   // LOAN | GL_ENTRY | REFUND | MEMBER_STATUS | DEPOSIT
-  level           Int      // 1-4
-  maxAmount       Decimal? @db.Decimal(15,2)
-  approverRole    String   // LOAN_OFFICER | LOAN_COMMITTEE | PRESIDENT | SECRETARY
+  transactionType String // LOAN | GL_ENTRY | REFUND | MEMBER_STATUS | DEPOSIT
+  level           Int // 1-4
+  maxAmount       Decimal? @db.Decimal(15, 2)
+  approverRole    String // LOAN_OFFICER | LOAN_COMMITTEE | PRESIDENT | SECRETARY
   slaHours        Int      @default(24) // SLA in hours
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, transactionType, level])
   @@map("approval_thresholds")
@@ -843,7 +850,7 @@ model ApprovalThreshold {
 model PlatformConfig {
   id        String   @id @default(cuid())
   key       String   @unique
-  value     String   // JSON for complex values
+  value     String // JSON for complex values
   label     String?
   updatedAt DateTime @updatedAt
 
@@ -853,11 +860,11 @@ model PlatformConfig {
 model TenantBilling {
   id        String   @id @default(cuid())
   tenantId  String   @unique
-  mrr       Decimal  @db.Decimal(12,2)  // Override: super admin set amount for this tenant
+  mrr       Decimal  @db.Decimal(12, 2) // Override: super admin set amount for this tenant
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@map("tenant_billing")
 }
@@ -869,20 +876,20 @@ model TenantBilling {
 model SuspenseEntry {
   id             String    @id @default(cuid())
   tenantId       String
-  suspenseNumber String    // SUS-001 style
-  amount         Decimal   @db.Decimal(15,2)
+  suspenseNumber String // SUS-001 style
+  amount         Decimal   @db.Decimal(15, 2)
   receiptDate    DateTime
   narration      String?
-  status         String    @default("OPEN")  // OPEN | CLEARED | OVERDUE
+  status         String    @default("OPEN") // OPEN | CLEARED | OVERDUE
   targetGlCode   String?
   targetGlName   String?
   clearingNote   String?
   clearedAt      DateTime?
-  clearedBy     String?
+  clearedBy      String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, suspenseNumber])
   @@map("suspense_entries")
@@ -893,20 +900,20 @@ model SuspenseEntry {
 // ─────────────────────────────────────────────
 
 model FixedAsset {
-  id                    String   @id @default(cuid())
-  tenantId              String
-  name                  String
-  assetClass            String   // BUILDING | FURNITURE | COMPUTER | VEHICLE | EQUIPMENT
-  purchaseDate          DateTime
-  cost                  Decimal  @db.Decimal(15,2)
-  depreciationMethod    String   @default("SLM") // SLM | WDV
-  depreciationRate      Decimal  @db.Decimal(6,4) // e.g. 0.0500 for 5%
-  accumulatedDepreciation Decimal @db.Decimal(15,2) @default(0)
-  netBookValue          Decimal  @db.Decimal(15,2)
-  disposedAt            DateTime?
-  disposalProceeds      Decimal? @db.Decimal(15,2)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                      String    @id @default(cuid())
+  tenantId                String
+  name                    String
+  assetClass              String // BUILDING | FURNITURE | COMPUTER | VEHICLE | EQUIPMENT
+  purchaseDate            DateTime
+  cost                    Decimal   @db.Decimal(15, 2)
+  depreciationMethod      String    @default("SLM") // SLM | WDV
+  depreciationRate        Decimal   @db.Decimal(6, 4) // e.g. 0.0500 for 5%
+  accumulatedDepreciation Decimal   @default(0) @db.Decimal(15, 2)
+  netBookValue            Decimal   @db.Decimal(15, 2)
+  disposedAt              DateTime?
+  disposalProceeds        Decimal?  @db.Decimal(15, 2)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@map("fixed_assets")
 }
@@ -921,11 +928,11 @@ model BankStatementUpload {
   fileName    String
   periodStart DateTime
   periodEnd   DateTime
-  bankName    String?   // SBI | HDFC | UCO etc
+  bankName    String? // SBI | HDFC | UCO etc
   createdAt   DateTime @default(now())
 
-  tenant       Tenant   @relation(fields: [tenantId], references: [id])
-  entries      BankStatementEntry[]
+  tenant  Tenant               @relation(fields: [tenantId], references: [id])
+  entries BankStatementEntry[]
 
   @@map("bank_statement_uploads")
 }
@@ -936,15 +943,15 @@ model BankStatementEntry {
   tenantId         String
   entryDate        DateTime
   narration        String?
-  amount           Decimal   @db.Decimal(15,2)
-  type             String    // CR | DR
+  amount           Decimal   @db.Decimal(15, 2)
+  type             String // CR | DR
   bankRef          String?
   matchedGlEntryId String?
   matchedAt        DateTime?
   isManualMatch    Boolean   @default(false)
   createdAt        DateTime  @default(now())
 
-  upload           BankStatementUpload @relation(fields: [uploadId], references: [id])
+  upload BankStatementUpload @relation(fields: [uploadId], references: [id])
 
   @@map("bank_statement_entries")
 }
@@ -955,17 +962,17 @@ model BankStatementEntry {
 
 // RSK-003: Concurrent Session Control
 model Session {
-  id           String   @id @default(cuid())
-  userId       String
-  tenantId    String?
-  token        String   @unique
-  ipAddress    String?
-  userAgent    String?
+  id             String   @id @default(cuid())
+  userId         String
+  tenantId       String?
+  token          String   @unique
+  ipAddress      String?
+  userAgent      String?
   lastActivityAt DateTime @default(now())
-  expiresAt    DateTime
-  createdAt    DateTime @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
 
-  user         User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([token])
@@ -979,7 +986,7 @@ model PasswordHistory {
   passwordHash String
   createdAt    DateTime @default(now())
 
-  user         User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@map("password_history")
@@ -987,12 +994,12 @@ model PasswordHistory {
 
 // RSK-001: Transaction Velocity Tracking
 model TransactionVelocity {
-  id            String   @id @default(cuid())
-  tenantId      String
-  accountId     String
+  id              String   @id @default(cuid())
+  tenantId        String
+  accountId       String
   transactionType String
-  amount        Decimal  @db.Decimal(15,2)
-  createdAt     DateTime @default(now())
+  amount          Decimal  @db.Decimal(15, 2)
+  createdAt       DateTime @default(now())
 
   @@index([tenantId, accountId, transactionType, createdAt])
   @@map("transaction_velocity")
@@ -1000,16 +1007,16 @@ model TransactionVelocity {
 
 // RSK-002: Daily Transaction Limits Tracking
 model DailyLimit {
-  id            String   @id @default(cuid())
-  tenantId      String
-  userId        String?
-  accountId     String?
-  limitType     String   // USER_CASH | ACCOUNT_CASH
-  date          DateTime @db.Date
-  amountUsed    Decimal  @db.Decimal(15,2) @default(0)
-  limitAmount   Decimal  @db.Decimal(15,2)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String?
+  accountId   String?
+  limitType   String // USER_CASH | ACCOUNT_CASH
+  date        DateTime @db.Date
+  amountUsed  Decimal  @default(0) @db.Decimal(15, 2)
+  limitAmount Decimal  @db.Decimal(15, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([tenantId, userId, accountId, limitType, date])
   @@index([tenantId, date])
@@ -1018,16 +1025,16 @@ model DailyLimit {
 
 // RSK-006: Data Masking Unmask Log
 model DataMaskingLog {
-  id            String   @id @default(cuid())
-  tenantId      String
-  userId        String
-  field         String   // aadhaar | pan | bank_account | mobile
-  entityType    String   // Member | User | Account
-  entityId      String
-  purpose       String?
-  createdAt     DateTime @default(now())
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String
+  field      String // aadhaar | pan | bank_account | mobile
+  entityType String // Member | User | Account
+  entityId   String
+  purpose    String?
+  createdAt  DateTime @default(now())
 
-  user          User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([tenantId, userId])
   @@map("data_masking_logs")
@@ -1035,16 +1042,16 @@ model DataMaskingLog {
 
 // RSK-007: Backup Verification Log
 model BackupVerification {
-  id            String   @id @default(cuid())
-  tenantId      String?
-  backupDate    DateTime @db.Date
+  id               String   @id @default(cuid())
+  tenantId         String?
+  backupDate       DateTime @db.Date
   verificationDate DateTime @default(now())
-  status        String   // SUCCESS | FAILED
-  rowCountLive  Int?
-  rowCountBackup Int?
-  errorMessage  String?
-  verifiedBy    String?  // System or user ID
-  createdAt     DateTime @default(now())
+  status           String // SUCCESS | FAILED
+  rowCountLive     Int?
+  rowCountBackup   Int?
+  errorMessage     String?
+  verifiedBy       String? // System or user ID
+  createdAt        DateTime @default(now())
 
   @@unique([backupDate])
   @@index([status])
@@ -1053,11 +1060,11 @@ model BackupVerification {
 
 // RSK-010: Audit Log Hash Chain (for immutability verification)
 model AuditLogHash {
-  id            String   @id @default(cuid())
-  auditLogId    String   @unique
-  hash          String   // SHA-256 hash of audit log entry + previous hash
-  previousHash  String?  // Hash of previous audit log entry
-  createdAt     DateTime @default(now())
+  id           String   @id @default(cuid())
+  auditLogId   String   @unique
+  hash         String // SHA-256 hash of audit log entry + previous hash
+  previousHash String? // Hash of previous audit log entry
+  createdAt    DateTime @default(now())
 
   @@index([hash])
   @@map("audit_log_hashes")
@@ -1065,16 +1072,16 @@ model AuditLogHash {
 
 // RSK-011: Data Retention Policy Tracking
 model DataRetention {
-  id            String   @id @default(cuid())
-  tenantId      String?
-  dataCategory  String   // TRANSACTION | AUDIT_LOG | KYC_AML | AI_DECISION | MEMBER | COMMUNICATION
-  recordId      String
+  id             String    @id @default(cuid())
+  tenantId       String?
+  dataCategory   String // TRANSACTION | AUDIT_LOG | KYC_AML | AI_DECISION | MEMBER | COMMUNICATION
+  recordId       String
   retentionUntil DateTime
-  archivedAt    DateTime?
-  purgedAt      DateTime?
-  status        String   @default("ACTIVE") // ACTIVE | ARCHIVED | PURGED
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  archivedAt     DateTime?
+  purgedAt       DateTime?
+  status         String    @default("ACTIVE") // ACTIVE | ARCHIVED | PURGED
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([tenantId, dataCategory, status])
   @@index([retentionUntil])
@@ -1083,22 +1090,22 @@ model DataRetention {
 
 // RSK-012: AML Transaction Alerts
 model AmlAlert {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   tenantId      String
   memberId      String?
   transactionId String?
-  alertType     String   // CTR | STRUCTURING | PEP | UNUSUAL_PATTERN
+  alertType     String // CTR | STRUCTURING | PEP | UNUSUAL_PATTERN
   ruleId        String?
-  amount        Decimal  @db.Decimal(15,2)
+  amount        Decimal   @db.Decimal(15, 2)
   description   String
-  status        String   @default("PENDING") // PENDING | REVIEWED | DISMISSED | STR_GENERATED
+  status        String    @default("PENDING") // PENDING | REVIEWED | DISMISSED | STR_GENERATED
   reviewedBy    String?
   reviewedAt    DateTime?
-  strGenerated  Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  strGenerated  Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  member        Member?  @relation(fields: [memberId], references: [id])
+  member Member? @relation(fields: [memberId], references: [id])
 
   @@index([tenantId, status])
   @@index([memberId])
@@ -1111,15 +1118,15 @@ model AmlAlert {
 
 // SEC-001: Permission Matrix (metadata-driven RBAC)
 model PermissionMatrix {
-  id            String   @id @default(cuid())
-  tenantId      String
-  role          String   // secretary | accountant | loan_officer | auditor | member
-  permissions   String[] // Array of permission strings (e.g., ["member:create", "gl:entry_create"])
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id @default(cuid())
+  tenantId    String
+  role        String // secretary | accountant | loan_officer | auditor | member
+  permissions String[] // Array of permission strings (e.g., ["member:create", "gl:entry_create"])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, role])
   @@index([tenantId])
@@ -1128,16 +1135,16 @@ model PermissionMatrix {
 
 // SEC-001: Role Assignment Log
 model RoleAssignmentLog {
-  id            String   @id @default(cuid())
-  tenantId      String?
-  userId        String
-  assignedRole  String
-  assignedBy    String
-  reason        String?
-  createdAt     DateTime @default(now())
+  id           String   @id @default(cuid())
+  tenantId     String?
+  userId       String
+  assignedRole String
+  assignedBy   String
+  reason       String?
+  createdAt    DateTime @default(now())
 
-  user          User     @relation(fields: [userId], references: [id])
-  assigner     User     @relation("RoleAssigner", fields: [assignedBy], references: [id])
+  user     User @relation(fields: [userId], references: [id])
+  assigner User @relation("RoleAssigner", fields: [assignedBy], references: [id])
 
   @@index([tenantId, userId])
   @@map("role_assignment_logs")
@@ -1145,17 +1152,17 @@ model RoleAssignmentLog {
 
 // SEC-002: MFA Setup & Verification Log
 model MfaLog {
-  id            String   @id @default(cuid())
-  userId        String
-  tenantId      String?
-  action        String   // SETUP | VERIFY | DISABLE | BACKUP_CODE_USED
-  method        String   // TOTP | SMS
-  success       Boolean  @default(true)
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  tenantId  String?
+  action    String // SETUP | VERIFY | DISABLE | BACKUP_CODE_USED
+  method    String // TOTP | SMS
+  success   Boolean  @default(true)
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
 
-  user          User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@map("mfa_logs")
@@ -1163,20 +1170,20 @@ model MfaLog {
 
 // SEC-005: DPDP Act 2023 - Data Access Request
 model DataAccessRequest {
-  id            String   @id @default(cuid())
-  tenantId      String
-  memberId      String
-  requestType   String   // ACCESS | CORRECTION | ERASURE
-  status        String   @default("PENDING") // PENDING | IN_PROGRESS | FULFILLED | REJECTED
-  requestedAt   DateTime @default(now())
-  fulfilledAt  DateTime?
-  fulfilledBy  String?
-  responseData  Json?    // Data provided in response
+  id              String    @id @default(cuid())
+  tenantId        String
+  memberId        String
+  requestType     String // ACCESS | CORRECTION | ERASURE
+  status          String    @default("PENDING") // PENDING | IN_PROGRESS | FULFILLED | REJECTED
+  requestedAt     DateTime  @default(now())
+  fulfilledAt     DateTime?
+  fulfilledBy     String?
+  responseData    Json? // Data provided in response
   rejectionReason String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@index([tenantId, memberId])
   @@index([status])
@@ -1185,22 +1192,22 @@ model DataAccessRequest {
 
 // SEC-005: DPDP Act 2023 - Data Correction Request
 model DataCorrectionRequest {
-  id            String   @id @default(cuid())
-  tenantId      String
-  memberId      String
-  field         String   // Field name to correct
-  oldValue      String?
-  newValue      String
-  reason        String?
-  status        String   @default("PENDING") // PENDING | APPROVED | REJECTED
-  requestedAt   DateTime @default(now())
-  processedAt   DateTime?
-  processedBy   String?
-  auditTrail    Json?    // Full audit trail of changes
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String    @id @default(cuid())
+  tenantId    String
+  memberId    String
+  field       String // Field name to correct
+  oldValue    String?
+  newValue    String
+  reason      String?
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  requestedAt DateTime  @default(now())
+  processedAt DateTime?
+  processedBy String?
+  auditTrail  Json? // Full audit trail of changes
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@index([tenantId, memberId])
   @@map("data_correction_requests")
@@ -1208,23 +1215,23 @@ model DataCorrectionRequest {
 
 // SEC-005: DPDP Act 2023 - Data Erasure Request
 model DataErasureRequest {
-  id            String   @id @default(cuid())
-  tenantId      String
-  memberId      String
-  erasureType   String   // FULL | PARTIAL | ANONYMIZE
-  reason        String?
-  status        String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | REJECTED
-  requestedAt   DateTime @default(now())
-  processedAt   DateTime?
-  processedBy   String?
+  id               String    @id @default(cuid())
+  tenantId         String
+  memberId         String
+  erasureType      String // FULL | PARTIAL | ANONYMIZE
+  reason           String?
+  status           String    @default("PENDING") // PENDING | PROCESSING | COMPLETED | REJECTED
+  requestedAt      DateTime  @default(now())
+  processedAt      DateTime?
+  processedBy      String?
   anonymizedFields String[] // Fields that were anonymized (not deleted)
-  deletedFields String[]    // Fields that were deleted
-  retentionFields String[]  // Fields retained for legal compliance
-  erasureLog    Json?    // Complete erasure log
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  deletedFields    String[] // Fields that were deleted
+  retentionFields  String[] // Fields retained for legal compliance
+  erasureLog       Json? // Complete erasure log
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@index([tenantId, memberId])
   @@map("data_erasure_requests")
@@ -1232,19 +1239,19 @@ model DataErasureRequest {
 
 // SEC-005: DPDP Act 2023 - Consent Management
 model ConsentRecord {
-  id            String   @id @default(cuid())
-  tenantId      String
-  memberId      String
-  purpose       String   // DATA_PROCESSING | MARKETING | SHARING | etc.
-  consentGiven  Boolean  @default(false)
-  consentDate   DateTime?
+  id             String    @id @default(cuid())
+  tenantId       String
+  memberId       String
+  purpose        String // DATA_PROCESSING | MARKETING | SHARING | etc.
+  consentGiven   Boolean   @default(false)
+  consentDate    DateTime?
   withdrawalDate DateTime?
-  method        String?  // ONLINE | OFFLINE | VERBAL
-  ipAddress     String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  method         String? // ONLINE | OFFLINE | VERBAL
+  ipAddress      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@unique([tenantId, memberId, purpose])
   @@index([tenantId, memberId])
@@ -1255,22 +1262,22 @@ model ConsentRecord {
 
 // INT-002, INT-011: Payment Requests (UPI, Payment Gateway)
 model PaymentRequest {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   tenantId      String
-  orderId       String   @unique
+  orderId       String    @unique
   amount        Decimal
   purpose       String
   transactionId String?
-  status        String   @default("PENDING") // PENDING | COMPLETED | FAILED | CANCELLED
-  paymentMethod String   // UPI | RAZORPAY | PAYU
+  status        String    @default("PENDING") // PENDING | COMPLETED | FAILED | CANCELLED
+  paymentMethod String // UPI | RAZORPAY | PAYU
   paymentId     String?
   referenceId   String?
   metadata      Json?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
   completedAt   DateTime?
-  updatedAt     DateTime @updatedAt
+  updatedAt     DateTime  @updatedAt
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId, orderId])
   @@index([transactionId])
@@ -1279,23 +1286,23 @@ model PaymentRequest {
 
 // INT-003: NACH Auto-Debit Mandates
 model NachMandate {
-  id            String   @id @default(cuid())
-  tenantId      String
-  memberId      String
-  mandateId     String   @unique
-  bankAccount   String
-  amount        Decimal
-  frequency     String   // MONTHLY | QUARTERLY | YEARLY
-  startDate     DateTime
-  endDate       DateTime?
-  status        String   @default("PENDING") // PENDING | ACTIVE | REJECTED | CANCELLED | EXPIRED
-  umrn          String?  // Unique Mandate Reference Number
-  registeredAt  DateTime?
-  metadata      Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String    @id @default(cuid())
+  tenantId     String
+  memberId     String
+  mandateId    String    @unique
+  bankAccount  String
+  amount       Decimal
+  frequency    String // MONTHLY | QUARTERLY | YEARLY
+  startDate    DateTime
+  endDate      DateTime?
+  status       String    @default("PENDING") // PENDING | ACTIVE | REJECTED | CANCELLED | EXPIRED
+  umrn         String? // Unique Mandate Reference Number
+  registeredAt DateTime?
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  member        Member   @relation(fields: [memberId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
 
   @@index([tenantId, memberId])
   @@index([mandateId])
@@ -1304,29 +1311,227 @@ model NachMandate {
 
 // INT-005: SMS/Notification Logs
 model NotificationLog {
-  id            String   @id @default(cuid())
-  tenantId      String
-  memberId      String?
-  type          String   // SMS | EMAIL | PUSH | WHATSAPP
-  recipient     String
-  templateId    String?
-  status        String   @default("PENDING") // PENDING | SENT | DELIVERED | FAILED
-  messageId     String?
-  subject       String?
-  body          String?
-  metadata      Json?
-  sentAt        DateTime?
-  deliveredAt   DateTime?
-  errorCode     String?
-  errorMessage  String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String    @id @default(cuid())
+  tenantId     String
+  memberId     String?
+  type         String // SMS | EMAIL | PUSH | WHATSAPP
+  recipient    String
+  templateId   String?
+  status       String    @default("PENDING") // PENDING | SENT | DELIVERED | FAILED
+  messageId    String?
+  subject      String?
+  body         String?
+  metadata     Json?
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  errorCode    String?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  member        Member?  @relation(fields: [memberId], references: [id])
+  tenant Tenant  @relation(fields: [tenantId], references: [id])
+  member Member? @relation(fields: [memberId], references: [id])
 
   @@index([tenantId, memberId])
   @@index([messageId])
   @@index([status])
   @@map("notification_logs")
+}
+
+// ─────────────────────────────────────────────
+// MODULE 16 — Interest Engine & Rate Management (BRD v4.0)
+// ─────────────────────────────────────────────
+
+// INT-001: Interest Rate Scheme Management
+model InterestScheme {
+  id                    String    @id @default(cuid())
+  tenantId              String
+  schemeCode            String
+  schemeName            String
+  productType           String // SB | FDR | RD | Loan
+  interestMethod        String // SIMPLE | REDUCING_BALANCE | FLAT
+  compoundingFreq       String // MONTHLY | QUARTERLY | ANNUALLY | SIMPLE
+  slabApplicationMethod String    @default("FLAT") // FLAT | MARGINAL
+  calculationBasis      String // Per interest.day.count.convention
+  effectiveFromDate     DateTime
+  effectiveToDate       DateTime?
+  status                String    @default("DRAFT") // DRAFT | PENDING_APPROVAL | ACTIVE | SUPERSEDED | DEACTIVATED
+  makerId               String? // User ID who created/modified
+  checkerId             String? // User ID who approved
+  submittedAt           DateTime?
+  approvedAt            DateTime?
+  rejectedAt            DateTime?
+  rejectionReason       String?
+  rateDeltaPct          Decimal?  @db.Decimal(5, 4) // For large-change routing
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  tenant    Tenant                @relation(fields: [tenantId], references: [id])
+  slabs     InterestSchemeSlab[]
+  auditLogs InterestSchemeAudit[]
+  accruals  InterestAccrual[]
+
+  @@unique([tenantId, schemeCode])
+  @@index([tenantId, productType, status])
+  @@index([tenantId, effectiveFromDate, effectiveToDate])
+  @@map("interest_schemes")
+}
+
+// INT-002: Slab-based Rate Configuration
+model InterestSchemeSlab {
+  id            String   @id @default(cuid())
+  schemeId      String
+  minAmount     Decimal? @db.Decimal(15, 2) // For balance-based slabs (SB)
+  maxAmount     Decimal? @db.Decimal(15, 2)
+  minTenureDays Int? // For tenure-based slabs (FDR/RD)
+  maxTenureDays Int?
+  rate          Decimal  @db.Decimal(5, 2) // Interest rate %
+  createdAt     DateTime @default(now())
+
+  scheme InterestScheme @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+
+  @@index([schemeId])
+  @@map("interest_scheme_slabs")
+}
+
+// INT-013: Interest Audit Trail
+model InterestSchemeAudit {
+  id              String    @id @default(cuid())
+  schemeId        String
+  changeType      String // CREATED | MODIFIED | DEACTIVATED
+  oldParameters   String // JSON snapshot
+  newParameters   String // JSON snapshot
+  changedBy       String // Maker user ID
+  approvedBy      String? // Checker user ID
+  changeDate      DateTime  @default(now())
+  effectiveDate   DateTime
+  approvalDate    DateTime?
+  rejectionReason String?
+  rateDeltaPct    Decimal?  @db.Decimal(5, 4)
+
+  scheme InterestScheme @relation(fields: [schemeId], references: [id])
+
+  @@index([schemeId])
+  @@index([changeDate])
+  @@map("interest_scheme_audit")
+}
+
+// INT-003, INT-009: Interest Accrual Records
+model InterestAccrual {
+  id               String    @id @default(cuid())
+  tenantId         String
+  accountId        String // SB account ID, Deposit ID, or Loan ID
+  accountType      String // SB | FDR | RD | Loan
+  schemeId         String?
+  accrualDate      DateTime
+  rateApplied      Decimal   @db.Decimal(5, 2)
+  schemeVersion    String? // Scheme version used
+  amountAccrued    Decimal   @db.Decimal(15, 2)
+  calculationBasis String // Day-count convention used
+  posted           Boolean   @default(false)
+  postedAt         DateTime?
+  createdAt        DateTime  @default(now())
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id])
+  scheme InterestScheme? @relation(fields: [schemeId], references: [id])
+
+  @@unique([tenantId, accountId, accountType, accrualDate])
+  @@index([tenantId, accountId, accountType])
+  @@index([accrualDate])
+  @@index([posted])
+  @@map("interest_accruals")
+}
+
+// INT-010: Backdated Interest Recalculation Request
+model RecalculationRequest {
+  id                String    @id @default(cuid())
+  tenantId          String
+  accountId         String
+  accountType       String // SB | FDR | RD
+  effectiveFromDate DateTime
+  reason            String
+  requestedBy       String // User ID
+  status            String    @default("DRAFT") // DRAFT | PENDING_APPROVAL | APPROVED | REJECTED
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  approvedBy        String? // Checker user ID
+  rejectedAt        DateTime?
+  rejectedBy        String? // Checker user ID
+  rejectionReason   String?
+  reversalCount     Int?
+  recalculationCount Int?
+  netDifference     Decimal?  @db.Decimal(15, 2)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  requester User?  @relation("RecalculationRequester", fields: [requestedBy], references: [id])
+
+  @@index([tenantId, status])
+  @@index([accountId, accountType])
+  @@index([status, submittedAt])
+  @@map("recalculation_requests")
+}
+
+// MEM-027: Member Photograph Management
+model MemberPhoto {
+  id                String    @id @default(cuid())
+  memberId          String
+  tenantId          String
+  purposeCode       String // ONBOARDING | RE_CAPTURE | KYC_RENEWAL
+  captureMode       String // UPLOAD | WEBCAM
+  filePath          String // Storage path (not exposed)
+  imageHash         String // SHA-256 hash
+  watermarkMetadata String? // JSON: member_id + tenant_id + timestamp
+  isCurrent         Boolean   @default(false)
+  status            String    @default("DRAFT") // DRAFT | PENDING_APPROVAL | APPROVED | REJECTED | ESCALATED | ACTIVE | HISTORICAL
+  makerId           String? // User ID who captured
+  checkerId         String? // User ID who approved
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String? // POOR_QUALITY | WRONG_MEMBER | CORRUPT_FILE
+  escalatedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([memberId, isCurrent])
+  @@index([tenantId, status])
+  @@index([status, submittedAt])
+  @@map("member_photos")
+}
+
+// MEM-028: Member Signature Management
+model MemberSignature {
+  id                 String    @id @default(cuid())
+  memberId           String
+  tenantId           String
+  purposeCode        String // ONBOARDING | RE_CAPTURE | MINOR_TO_MAJOR
+  captureMode        String // UPLOAD | PAD
+  filePath           String // Storage path (not exposed)
+  imageHash          String // SHA-256 hash
+  isCurrent          Boolean   @default(false)
+  isGuardianSig      Boolean   @default(false) // For minor members
+  guardianValidUntil DateTime? // DOB + 18 years
+  status             String    @default("DRAFT") // DRAFT | VALIDATION | PENDING_APPROVAL | APPROVED | REJECTED | ESCALATED | ACTIVE | HISTORICAL
+  makerId            String? // Secretary/Society Admin only
+  checkerId          String? // Secretary/Society Admin
+  submittedAt        DateTime?
+  approvedAt         DateTime?
+  rejectedAt         DateTime?
+  rejectionReason    String? // ILLEGIBLE | BLANK_SCAN | WRONG_MEMBER | LOW_QUALITY
+  escalatedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([memberId, isCurrent])
+  @@index([tenantId, status])
+  @@index([status, submittedAt])
+  @@map("member_signatures")
 }

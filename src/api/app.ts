@@ -35,6 +35,11 @@ import fixedAssetsRoutes from "./routes/fixed-assets";
 import riskControlsRoutes from "./routes/risk-controls";
 import securityRoutes from "./routes/security";
 import integrationsRoutes from "./routes/integrations";
+import interestEngineRoutes from "./routes/interest-engine";
+import interestPostingRoutes from "./routes/interest-posting";
+import memberDocumentsRoutes from "./routes/member-documents";
+import backdatedRecalculationRoutes from "./routes/backdated-recalculation";
+import anomalyAlertsRoutes from "./routes/anomaly-alerts";
 
 dotenv.config();
 
@@ -125,6 +130,11 @@ v1.use("/fixed-assets", fixedAssetsRoutes);
 v1.use("/risk-controls", riskControlsRoutes);
 v1.use("/security", securityRoutes);
 v1.use("/integrations", integrationsRoutes);
+v1.use("/interest", interestEngineRoutes);
+v1.use("/interest", interestPostingRoutes); // Interest posting with TDS
+v1.use("/recalculation", backdatedRecalculationRoutes); // Backdated interest recalculation
+v1.use("/anomaly-alerts", anomalyAlertsRoutes); // AI anomaly alert management
+v1.use("/members", memberDocumentsRoutes); // Photo/Signature routes
 
 app.use("/api/v1", v1);
 
