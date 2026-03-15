@@ -35,6 +35,17 @@ function npaCategory(dpd: number): string {
     return "doubtful_3";
 }
 
+// ─── Explicit route to prevent /loans/products from matching /loans/:id ────────
+// This route handler catches "products" before the :id route can match it
+router.get("/products", (req, res, next) => {
+    // This should never be reached if loan-products.ts route is registered first
+    // But adding it as a safety net
+    res.status(404).json({ 
+        success: false, 
+        message: "Route /loans/products not found. Please ensure loan-products route is registered." 
+    });
+});
+
 // ─── GET /api/v1/loans/eligibility/:memberId ─────────────────────────────────
 router.get("/eligibility/:memberId", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
