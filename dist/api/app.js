@@ -19,8 +19,15 @@ const platform_config_1 = __importDefault(require("./routes/platform-config"));
 const platform_usage_1 = __importDefault(require("./routes/platform-usage"));
 const config_1 = __importDefault(require("./routes/config"));
 const members_1 = __importDefault(require("./routes/members"));
+const member_photo_signature_1 = __importDefault(require("./routes/member-photo-signature"));
 const sb_1 = __importDefault(require("./routes/sb"));
 const loans_1 = __importDefault(require("./routes/loans"));
+const loan_products_1 = __importDefault(require("./routes/loan-products"));
+const loan_documents_1 = __importDefault(require("./routes/loan-documents"));
+const loan_sanction_1 = __importDefault(require("./routes/loan-sanction"));
+const loan_disbursement_1 = __importDefault(require("./routes/loan-disbursement"));
+const loan_collateral_1 = __importDefault(require("./routes/loan-collateral"));
+const guarantor_exposure_1 = __importDefault(require("./routes/guarantor-exposure"));
 const deposits_1 = __importDefault(require("./routes/deposits"));
 const gl_1 = __importDefault(require("./routes/gl"));
 const suspense_1 = __importDefault(require("./routes/suspense"));
@@ -38,6 +45,11 @@ const fixed_assets_1 = __importDefault(require("./routes/fixed-assets"));
 const risk_controls_1 = __importDefault(require("./routes/risk-controls"));
 const security_1 = __importDefault(require("./routes/security"));
 const integrations_1 = __importDefault(require("./routes/integrations"));
+const interest_engine_1 = __importDefault(require("./routes/interest-engine"));
+const interest_posting_1 = __importDefault(require("./routes/interest-posting"));
+const member_documents_1 = __importDefault(require("./routes/member-documents"));
+const backdated_recalculation_1 = __importDefault(require("./routes/backdated-recalculation"));
+const anomaly_alerts_1 = __importDefault(require("./routes/anomaly-alerts"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 app.set("trust proxy", 1);
@@ -95,8 +107,15 @@ v1.use("/platform/config", platform_config_1.default);
 v1.use("/platform/usage", platform_usage_1.default);
 v1.use("/config", config_1.default);
 v1.use("/members", members_1.default);
+v1.use("/members", member_photo_signature_1.default); // BRD v5.0: /members/:memberId/photo/current, /members/:memberId/signature/current
 v1.use("/sb", sb_1.default);
+v1.use("/loans/products", loan_products_1.default); // Must be before /loans to avoid route conflict
 v1.use("/loans", loans_1.default);
+v1.use("/loans", loan_documents_1.default); // Document routes: /loans/applications/:id/documents, /loans/products/:id/checklist
+v1.use("/loans", loan_sanction_1.default); // Sanction routes: /loans/applications/:id/generate-can, /loans/applications/:id/sanction
+v1.use("/loans", loan_disbursement_1.default); // Disbursement routes: /loans/applications/:id/pre-disbursement-check, /loans/:loanId/disburse
+v1.use("/loans", loan_collateral_1.default); // Collateral routes: /loans/applications/:id/collateral, /loans/collateral/gold/calculate
+v1.use("/loans", guarantor_exposure_1.default); // Guarantor routes: /loans/guarantors/:memberId/exposure
 v1.use("/deposits", deposits_1.default);
 v1.use("/gl", gl_1.default);
 v1.use("/suspense", suspense_1.default);
@@ -114,6 +133,11 @@ v1.use("/fixed-assets", fixed_assets_1.default);
 v1.use("/risk-controls", risk_controls_1.default);
 v1.use("/security", security_1.default);
 v1.use("/integrations", integrations_1.default);
+v1.use("/interest", interest_engine_1.default);
+v1.use("/interest", interest_posting_1.default); // Interest posting with TDS
+v1.use("/recalculation", backdated_recalculation_1.default); // Backdated interest recalculation
+v1.use("/anomaly-alerts", anomaly_alerts_1.default); // AI anomaly alert management
+v1.use("/members", member_documents_1.default); // Photo/Signature routes
 app.use("/api/v1", v1);
 // 404 & error handling
 app.use(error_1.notFound);

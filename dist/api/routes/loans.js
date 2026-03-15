@@ -67,6 +67,16 @@ function npaCategory(dpd) {
         return "doubtful_2";
     return "doubtful_3";
 }
+// ─── Explicit route to prevent /loans/products from matching /loans/:id ────────
+// This route handler catches "products" before the :id route can match it
+router.get("/products", (req, res, next) => {
+    // This should never be reached if loan-products.ts route is registered first
+    // But adding it as a safety net
+    res.status(404).json({
+        success: false,
+        message: "Route /loans/products not found. Please ensure loan-products route is registered."
+    });
+});
 // ─── GET /api/v1/loans/eligibility/:memberId ─────────────────────────────────
 router.get("/eligibility/:memberId", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
     try {
@@ -99,6 +109,13 @@ router.post("/applications", auth_1.authMiddleware, auth_1.requireTenant, async 
             goldValue: zod_1.z.number().positive().optional(), // gold loan appraised value
             collateralFdrId: zod_1.z.string().optional(), // LAD: FDR collateral
             householdIncome: zod_1.z.number().positive().optional(), // microfinance: declared income
+            // BRD v5.0 LN-F01 to LN-F05: Enhanced application fields
+            productId: zod_1.z.string().optional(), // Link to LoanProduct
+            employmentType: zod_1.z.enum(["SALARIED", "SELF_EMPLOYED", "FARMER", "BUSINESS", "OTHER"]).optional(),
+            monthlyIncome: zod_1.z.number().positive().optional(),
+            existingLiabilities: zod_1.z.string().optional(),
+            propertyAssetDesc: zod_1.z.string().optional(),
+            guarantorIds: zod_1.z.array(zod_1.z.string()).default([]), // Multiple guarantors (LN-F05)
         }).parse(req.body);
         // ── COA: Gold loan LTV check (max 75%) ───────────────────────────────
         if (data.loanSubType === "gold" || data.loanType === "gold") {
@@ -171,12 +188,15 @@ router.post("/applications", auth_1.authMiddleware, auth_1.requireTenant, async 
             return;
         }
         // LN-003: AI Loan Risk Scoring (Improved - using actual factors)
+        // BRD v5.0 LN-F01: Also fetch member photos/signatures for pre-fill
         const member = await prisma_1.default.member.findUnique({
             where: { id: data.memberId },
             include: {
                 loans: { where: { status: { in: ["active", "closed"] } } },
                 sbAccounts: { where: { status: "active" } },
                 shareLedger: true,
+                memberPhotos: { where: { status: "APPROVED" }, orderBy: { createdAt: "desc" }, take: 1 },
+                memberSignatures: { where: { status: "APPROVED" }, orderBy: { createdAt: "desc" }, take: 1 },
             },
         });
         let riskScore = 50; // Base score
@@ -336,8 +356,15 @@ router.post("/applications", auth_1.authMiddleware, auth_1.requireTenant, async 
                 moratoriumMonths: data.moratoriumMonths,
                 riskScore: Math.round(riskScore * 100) / 100,
                 riskCategory,
-                status: "pending",
+                status: "APPLIED", // BRD v5.0 status flow
                 loanSubType: data.loanSubType ?? null,
+                // BRD v5.0 fields
+                productId: data.productId,
+                employmentType: data.employmentType,
+                monthlyIncome: data.monthlyIncome,
+                existingLiabilities: data.existingLiabilities,
+                propertyAssetDesc: data.propertyAssetDesc,
+                guarantorIds: data.guarantorIds,
                 // Store assigned approver in remarks/metadata
                 remarks: `Assigned to: ${assignedApprover} (Threshold-based routing)`,
             },
@@ -349,7 +376,39 @@ router.post("/applications", auth_1.authMiddleware, auth_1.requireTenant, async 
             entity: "LoanApplication",
             entityId: application.id,
         });
-        res.status(201).json({ success: true, application, eligibility: { ...eligibility, ruleVersion } });
+        // BRD v5.0 LN-F01: Pre-fill member data for response (member already fetched above)
+        const shareCount = member?.shareLedger.reduce((sum, l) => (l.transactionType === "purchase" ? sum + l.shares : sum - l.shares), 0) || 0;
+        // Calculate proposed EMI (if product has interest scheme)
+        let calculatedEmi = null;
+        if (data.productId) {
+            const product = await prisma_1.default.loanProduct.findFirst({
+                where: { id: data.productId },
+                include: { interestScheme: { include: { slabs: true } } },
+            });
+            if (product?.interestScheme?.slabs.length > 0) {
+                const rate = product.interestScheme.slabs[0].rate;
+                const monthlyRate = Number(rate) / 100 / 12;
+                const emi = (Number(data.amountRequested) * monthlyRate * Math.pow(1 + monthlyRate, data.tenureMonths)) /
+                    (Math.pow(1 + monthlyRate, data.tenureMonths) - 1);
+                calculatedEmi = Math.round(emi);
+            }
+        }
+        res.status(201).json({
+            success: true,
+            application,
+            eligibility: { ...eligibility, ruleVersion },
+            // BRD v5.0 LN-F01: Pre-filled data
+            preFilledData: member ? {
+                name: `${member.firstName} ${member.lastName}`,
+                address: member.address,
+                aadhaarMasked: member.aadhaar ? `${member.aadhaar.slice(0, 4)}****${member.aadhaar.slice(-4)}` : null,
+                dateOfBirth: member.dateOfBirth,
+                photo: member.memberPhotos[0]?.fileUrl || null,
+                signature: member.memberSignatures[0]?.fileUrl || null,
+                shareHolding: shareCount,
+            } : null,
+            calculatedEmi,
+        });
     }
     catch (err) {
         if (err instanceof zod_1.z.ZodError) {
@@ -547,6 +606,64 @@ router.post("/applications/:id/reject", auth_1.authMiddleware, auth_1.requireTen
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
+// ─── PUT /api/v1/loans/applications/:id/status ─────────────────────────────────
+// BRD v5.0 Section 4.6.2: Status Flow - APPLIED → UNDER_REVIEW → PENDING_SANCTION
+router.put("/applications/:id/status", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const userId = req.user.id;
+        const data = zod_1.z.object({
+            status: zod_1.z.enum(["UNDER_REVIEW", "PENDING_SANCTION", "REJECTED"]),
+            remarks: zod_1.z.string().optional(),
+        }).parse(req.body);
+        const application = await prisma_1.default.loanApplication.findFirst({
+            where: { id: req.params.id, tenantId },
+        });
+        if (!application) {
+            res.status(404).json({ success: false, message: "Application not found" });
+            return;
+        }
+        // Validate status transitions
+        const validTransitions = {
+            APPLIED: ["UNDER_REVIEW", "REJECTED"],
+            UNDER_REVIEW: ["PENDING_SANCTION", "REJECTED"],
+            PENDING_SANCTION: ["SANCTIONED", "REJECTED"], // Handled by sanction endpoint
+        };
+        const allowedStatuses = validTransitions[application.status] || [];
+        if (!allowedStatuses.includes(data.status)) {
+            res.status(400).json({
+                success: false,
+                message: `Invalid status transition from ${application.status} to ${data.status}. Allowed: ${allowedStatuses.join(", ")}`,
+            });
+            return;
+        }
+        const updated = await prisma_1.default.loanApplication.update({
+            where: { id: req.params.id },
+            data: {
+                status: data.status,
+                reviewedBy: userId,
+                reviewedAt: new Date(),
+                remarks: data.remarks || application.remarks,
+            },
+        });
+        await (0, audit_1.createAuditLog)({
+            tenantId,
+            userId,
+            action: `LOAN_APPLICATION_STATUS_${data.status}`,
+            entity: "LoanApplication",
+            entityId: application.id,
+            metadata: { previousStatus: application.status, newStatus: data.status },
+        });
+        res.json({ success: true, application: updated });
+    }
+    catch (e) {
+        if (e.name === "ZodError") {
+            res.status(400).json({ success: false, errors: e.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
 // ─── POST /api/v1/loans/applications/:id/disburse ────────────────────────────
 router.post("/applications/:id/disburse", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
     try {
@@ -574,23 +691,21 @@ router.post("/applications/:id/disburse", auth_1.authMiddleware, auth_1.requireT
         const { generateLoanId } = await Promise.resolve().then(() => __importStar(require("../../lib/id-generator")));
         const loanNumber = generateLoanId(count + 1);
         const period = (0, gl_posting_1.currentPeriod)();
-        // Generate EMI schedule (flat rate) - LN-005: Account for moratorium period
-        const monthlyInterest = (disbursedAmount * (interestRate / 100)) / 12;
-        const emi = disbursedAmount / application.tenureMonths + monthlyInterest;
+        // BRD v4.0 INT-006: Generate EMI schedule with rounding mode
+        const { generateEMISchedule } = await Promise.resolve().then(() => __importStar(require("../../services/emi-schedule.service")));
         const moratoriumMonths = application.moratoriumMonths || 0;
         const moratoriumEndDate = moratoriumMonths > 0 ? new Date(Date.now() + moratoriumMonths * 30 * 24 * 60 * 60 * 1000) : null;
-        const emiScheduleData = Array.from({ length: application.tenureMonths }, (_, i) => {
-            const dueDate = new Date();
-            // EMI schedule starts after moratorium period
-            dueDate.setMonth(dueDate.getMonth() + moratoriumMonths + i + 1);
-            return {
-                installmentNo: i + 1,
-                dueDate,
-                principal: disbursedAmount / application.tenureMonths,
-                interest: monthlyInterest,
-                totalEmi: emi,
-            };
-        });
+        const emiSchedule = await generateEMISchedule(tenantId, disbursedAmount, interestRate, application.tenureMonths, new Date(), moratoriumMonths);
+        const emiScheduleData = emiSchedule.map((item) => ({
+            installmentNo: item.installmentNo,
+            dueDate: item.dueDate,
+            principal: String(item.principalComponent),
+            interest: String(item.interestComponent),
+            totalEmi: String(item.totalEmi),
+            penalAmount: "0",
+            paidAmount: "0",
+            status: "pending",
+        }));
         const loan = await prisma_1.default.$transaction(async (tx) => {
             const newLoan = await tx.loan.create({
                 data: {
@@ -680,8 +795,18 @@ router.get("/", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) =>
     }
 });
 // ─── GET /api/v1/loans/:id ───────────────────────────────────────────────────
+// Note: This route should NOT match /loans/products - that route is handled by loan-products.ts
+// If products is passed as :id, it means the route order is wrong or old code is deployed
 router.get("/:id", auth_1.authMiddleware, auth_1.requireTenant, async (req, res) => {
     try {
+        // Defensive check: if "products" is passed as ID, it means route conflict
+        if (req.params.id === "products" || req.params.id === "applications" || req.params.id === "eligibility") {
+            res.status(404).json({
+                success: false,
+                message: "Route not found. Please ensure backend is updated with latest code."
+            });
+            return;
+        }
         const tenantId = req.user.tenantId;
         const loan = await prisma_1.default.loan.findFirst({
             where: { id: req.params.id, tenantId },
@@ -1030,17 +1155,19 @@ router.post("/:id/restructure", auth_1.authMiddleware, auth_1.requireTenant, asy
         // Generate new EMI schedule
         const monthlyInterest = (outstandingPrincipal * (currentRate / 100)) / 12;
         const emi = newEmiAmount || (outstandingPrincipal / newTenure + monthlyInterest);
-        const emiScheduleData = Array.from({ length: newTenure }, (_, i) => {
-            const dueDate = new Date();
-            dueDate.setMonth(dueDate.getMonth() + newMoratoriumMonths + i + 1);
-            return {
-                installmentNo: i + 1,
-                dueDate,
-                principal: outstandingPrincipal / newTenure,
-                interest: monthlyInterest,
-                totalEmi: emi,
-            };
-        });
+        // BRD v4.0 INT-006: Use EMI schedule generator with rounding
+        const { generateEMISchedule } = await Promise.resolve().then(() => __importStar(require("../../services/emi-schedule.service")));
+        const emiSchedule = await generateEMISchedule(tenantId, outstandingPrincipal, Number(loan.interestRate), newTenure, new Date(), newMoratoriumMonths);
+        const emiScheduleData = emiSchedule.map((item) => ({
+            installmentNo: item.installmentNo,
+            dueDate: item.dueDate,
+            principal: String(item.principalComponent),
+            interest: String(item.interestComponent),
+            totalEmi: String(item.totalEmi),
+            penalAmount: "0",
+            paidAmount: "0",
+            status: "pending",
+        }));
         await prisma_1.default.$transaction([
             prisma_1.default.emiSchedule.createMany({
                 data: emiScheduleData.map((e) => ({ ...e, loanId: loan.id })),
@@ -1130,12 +1257,18 @@ router.post("/:id/refinance", auth_1.authMiddleware, auth_1.requireTenant, async
         const period = (0, gl_posting_1.currentPeriod)();
         const monthlyInterest = (newLoanAmount * (newInterestRate / 100)) / 12;
         const emi = newLoanAmount / newTenureMonths + monthlyInterest;
-        const emiScheduleData = Array.from({ length: newTenureMonths }, (_, i) => ({
-            installmentNo: i + 1,
-            dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000),
-            principal: newLoanAmount / newTenureMonths,
-            interest: monthlyInterest,
-            totalEmi: emi,
+        // BRD v4.0 INT-006: Use EMI schedule generator
+        const { generateEMISchedule } = await Promise.resolve().then(() => __importStar(require("../../services/emi-schedule.service")));
+        const emiSchedule = await generateEMISchedule(tenantId, newLoanAmount, newInterestRate, newTenureMonths, new Date(), 0);
+        const emiScheduleData = emiSchedule.map((item) => ({
+            installmentNo: item.installmentNo,
+            dueDate: item.dueDate,
+            principal: String(item.principalComponent),
+            interest: String(item.interestComponent),
+            totalEmi: String(item.totalEmi),
+            penalAmount: "0",
+            paidAmount: "0",
+            status: "pending",
         }));
         const newLoan = await prisma_1.default.$transaction(async (tx) => {
             const createdLoan = await tx.loan.create({
@@ -1522,12 +1655,18 @@ router.post("/group-loans/:id/disburse", auth_1.authMiddleware, auth_1.requireTe
             const loanNumber = generateLoanId(loanCount + 1);
             const monthlyInterest = (loanAmount * (interestRate / 100)) / 12;
             const emi = loanAmount / tenureMonths + monthlyInterest;
-            const emiScheduleData = Array.from({ length: tenureMonths }, (_, i) => ({
-                installmentNo: i + 1,
-                dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000),
-                principal: loanAmount / tenureMonths,
-                interest: monthlyInterest,
-                totalEmi: emi,
+            // BRD v4.0 INT-006: Use EMI schedule generator
+            const { generateEMISchedule } = await Promise.resolve().then(() => __importStar(require("../../services/emi-schedule.service")));
+            const emiSchedule = await generateEMISchedule(tenantId, loanAmount, interestRate, tenureMonths, new Date(), 0);
+            const emiScheduleData = emiSchedule.map((item) => ({
+                installmentNo: item.installmentNo,
+                dueDate: item.dueDate,
+                principal: String(item.principalComponent),
+                interest: String(item.interestComponent),
+                totalEmi: String(item.totalEmi),
+                penalAmount: "0",
+                paidAmount: "0",
+                status: "pending",
             }));
             const loan = await prisma_1.default.$transaction(async (tx) => {
                 const createdLoan = await tx.loan.create({

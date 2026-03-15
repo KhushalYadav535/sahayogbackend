@@ -24,6 +24,7 @@ export declare function processDayEnd(job: Job<{
     sweepInsExecuted: number;
     sweepOutsExecuted: number;
     overdueEmisMarked: any;
+    penalInterestAccrued: number;
     dormantAccountsMarked: any;
     overdueSuspenseAlerts: any;
     deafApproachingDeposits: any;
