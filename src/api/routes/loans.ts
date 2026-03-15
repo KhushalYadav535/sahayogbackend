@@ -67,6 +67,13 @@ router.post("/applications", authMiddleware, requireTenant, async (req: AuthRequ
             goldValue: z.number().positive().optional(),          // gold loan appraised value
             collateralFdrId: z.string().optional(),               // LAD: FDR collateral
             householdIncome: z.number().positive().optional(),    // microfinance: declared income
+            // BRD v5.0 LN-F01 to LN-F05: Enhanced application fields
+            productId: z.string().optional(),                     // Link to LoanProduct
+            employmentType: z.enum(["SALARIED", "SELF_EMPLOYED", "FARMER", "BUSINESS", "OTHER"]).optional(),
+            monthlyIncome: z.number().positive().optional(),
+            existingLiabilities: z.string().optional(),
+            propertyAssetDesc: z.string().optional(),
+            guarantorIds: z.array(z.string()).default([]),        // Multiple guarantors (LN-F05)
         }).parse(req.body);
 
         // ── COA: Gold loan LTV check (max 75%) ───────────────────────────────
@@ -144,12 +151,15 @@ router.post("/applications", authMiddleware, requireTenant, async (req: AuthRequ
         }
 
         // LN-003: AI Loan Risk Scoring (Improved - using actual factors)
+        // BRD v5.0 LN-F01: Also fetch member photos/signatures for pre-fill
         const member = await prisma.member.findUnique({
             where: { id: data.memberId },
             include: {
                 loans: { where: { status: { in: ["active", "closed"] } } },
                 sbAccounts: { where: { status: "active" } },
                 shareLedger: true,
+                memberPhotos: { where: { status: "APPROVED" }, orderBy: { createdAt: "desc" }, take: 1 },
+                memberSignatures: { where: { status: "APPROVED" }, orderBy: { createdAt: "desc" }, take: 1 },
             },
         });
 
@@ -319,8 +329,15 @@ router.post("/applications", authMiddleware, requireTenant, async (req: AuthRequ
                 moratoriumMonths: data.moratoriumMonths,
                 riskScore: Math.round(riskScore * 100) / 100,
                 riskCategory,
-                status: "pending",
+                status: "APPLIED", // BRD v5.0 status flow
                 loanSubType: data.loanSubType ?? null,
+                // BRD v5.0 fields
+                productId: data.productId,
+                employmentType: data.employmentType,
+                monthlyIncome: data.monthlyIncome,
+                existingLiabilities: data.existingLiabilities,
+                propertyAssetDesc: data.propertyAssetDesc,
+                guarantorIds: data.guarantorIds,
                 // Store assigned approver in remarks/metadata
                 remarks: `Assigned to: ${assignedApprover} (Threshold-based routing)`,
             },
@@ -334,7 +351,44 @@ router.post("/applications", authMiddleware, requireTenant, async (req: AuthRequ
             entityId: application.id,
         });
 
-        res.status(201).json({ success: true, application, eligibility: { ...eligibility, ruleVersion } });
+        // BRD v5.0 LN-F01: Pre-fill member data for response (member already fetched above)
+        const shareCount = member?.shareLedger.reduce(
+            (sum, l) => (l.transactionType === "purchase" ? sum + l.shares : sum - l.shares),
+            0
+        ) || 0;
+
+        // Calculate proposed EMI (if product has interest scheme)
+        let calculatedEmi = null;
+        if (data.productId) {
+            const product = await prisma.loanProduct.findFirst({
+                where: { id: data.productId },
+                include: { interestScheme: { include: { slabs: true } } },
+            });
+            if (product?.interestScheme?.slabs.length > 0) {
+                const rate = product.interestScheme.slabs[0].rate;
+                const monthlyRate = Number(rate) / 100 / 12;
+                const emi = (Number(data.amountRequested) * monthlyRate * Math.pow(1 + monthlyRate, data.tenureMonths)) /
+                    (Math.pow(1 + monthlyRate, data.tenureMonths) - 1);
+                calculatedEmi = Math.round(emi);
+            }
+        }
+
+        res.status(201).json({
+            success: true,
+            application,
+            eligibility: { ...eligibility, ruleVersion },
+            // BRD v5.0 LN-F01: Pre-filled data
+            preFilledData: member ? {
+                name: `${member.firstName} ${member.lastName}`,
+                address: member.address,
+                aadhaarMasked: member.aadhaar ? `${member.aadhaar.slice(0, 4)}****${member.aadhaar.slice(-4)}` : null,
+                dateOfBirth: member.dateOfBirth,
+                photo: member.memberPhotos[0]?.fileUrl || null,
+                signature: member.memberSignatures[0]?.fileUrl || null,
+                shareHolding: shareCount,
+            } : null,
+            calculatedEmi,
+        });
     } catch (err) {
         if (err instanceof z.ZodError) {
             res.status(400).json({ success: false, errors: err.errors });
@@ -535,6 +589,72 @@ router.post("/applications/:id/reject", authMiddleware, requireTenant, async (re
         res.json({ success: true, application: app });
     } catch {
         res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// ─── PUT /api/v1/loans/applications/:id/status ─────────────────────────────────
+// BRD v5.0 Section 4.6.2: Status Flow - APPLIED → UNDER_REVIEW → PENDING_SANCTION
+router.put("/applications/:id/status", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const userId = req.user!.id;
+
+        const data = z.object({
+            status: z.enum(["UNDER_REVIEW", "PENDING_SANCTION", "REJECTED"]),
+            remarks: z.string().optional(),
+        }).parse(req.body);
+
+        const application = await prisma.loanApplication.findFirst({
+            where: { id: req.params.id, tenantId },
+        });
+
+        if (!application) {
+            res.status(404).json({ success: false, message: "Application not found" });
+            return;
+        }
+
+        // Validate status transitions
+        const validTransitions: Record<string, string[]> = {
+            APPLIED: ["UNDER_REVIEW", "REJECTED"],
+            UNDER_REVIEW: ["PENDING_SANCTION", "REJECTED"],
+            PENDING_SANCTION: ["SANCTIONED", "REJECTED"], // Handled by sanction endpoint
+        };
+
+        const allowedStatuses = validTransitions[application.status] || [];
+        if (!allowedStatuses.includes(data.status)) {
+            res.status(400).json({
+                success: false,
+                message: `Invalid status transition from ${application.status} to ${data.status}. Allowed: ${allowedStatuses.join(", ")}`,
+            });
+            return;
+        }
+
+        const updated = await prisma.loanApplication.update({
+            where: { id: req.params.id },
+            data: {
+                status: data.status,
+                reviewedBy: userId,
+                reviewedAt: new Date(),
+                remarks: data.remarks || application.remarks,
+            },
+        });
+
+        await createAuditLog({
+            tenantId,
+            userId,
+            action: `LOAN_APPLICATION_STATUS_${data.status}`,
+            entity: "LoanApplication",
+            entityId: application.id,
+            metadata: { previousStatus: application.status, newStatus: data.status },
+        });
+
+        res.json({ success: true, application: updated });
+    } catch (e: any) {
+        if (e.name === "ZodError") {
+            res.status(400).json({ success: false, errors: e.errors });
+            return;
+        }
+        res.status(500).json({ success: false, message: (e as Error).message });
     }
 });
 

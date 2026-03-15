@@ -8,7 +8,7 @@ import { authMiddleware, requireTenant, AuthRequest } from "../middleware/auth";
 const router = Router();
 
 // Map to ApprovalItem-like shape
-type ApprovalSource = "voucher" | "loan_application";
+type ApprovalSource = "voucher" | "loan_application" | "loan_product" | "interest_scheme";
 
 // GET /api/v1/approvals — aggregated pending/approved/rejected items
 router.get("/", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
@@ -83,6 +83,58 @@ router.get("/", authMiddleware, requireTenant, async (req: AuthRequest, res: Res
                 slaDeadline: sla.toISOString(),
                 entityId: a.id,
                 entityType: "Loan",
+            });
+        }
+
+        // BRD v5.0 LN-A01: Loan Products pending approval
+        const loanProducts = await prisma.loanProduct.findMany({
+            where: { tenantId, status: "PENDING_APPROVAL" },
+            orderBy: { submittedAt: "desc" },
+            take: 100,
+            include: {
+                interestScheme: { select: { schemeCode: true, schemeName: true } },
+            },
+        });
+        for (const p of loanProducts) {
+            const sla = p.submittedAt ? new Date(p.submittedAt) : new Date(p.createdAt);
+            sla.setHours(sla.getHours() + 24);
+            const ageHours = Math.floor((Date.now() - sla.getTime()) / (1000 * 60 * 60));
+            items.push({
+                id: p.id,
+                source: "loan_product",
+                type: "LOAN_PRODUCT",
+                status: "PENDING_APPROVAL",
+                description: `Loan Product: ${p.productName} (${p.category})`,
+                makerName: p.makerId ? `User ${p.makerId.slice(-6)}` : "System",
+                makerRole: "Society Admin",
+                createdAt: p.submittedAt?.toISOString() || p.createdAt.toISOString(),
+                slaDeadline: sla.toISOString(),
+                entityId: p.productCode,
+                entityType: "LoanProduct",
+            });
+        }
+
+        // BRD v5.0 LN-A01: Interest Schemes pending approval
+        const interestSchemes = await prisma.interestScheme.findMany({
+            where: { tenantId, status: "PENDING_APPROVAL" },
+            orderBy: { submittedAt: "desc" },
+            take: 100,
+        });
+        for (const s of interestSchemes) {
+            const sla = s.submittedAt ? new Date(s.submittedAt) : new Date(s.createdAt);
+            sla.setHours(sla.getHours() + 24);
+            items.push({
+                id: s.id,
+                source: "interest_scheme",
+                type: "INTEREST_SCHEME",
+                status: "PENDING_APPROVAL",
+                description: `Interest Scheme: ${s.schemeName} (${s.schemeCode})`,
+                makerName: s.makerId ? `User ${s.makerId.slice(-6)}` : "System",
+                makerRole: "Accountant",
+                createdAt: s.submittedAt?.toISOString() || s.createdAt.toISOString(),
+                slaDeadline: sla.toISOString(),
+                entityId: s.schemeCode,
+                entityType: "InterestScheme",
             });
         }
 
@@ -173,6 +225,228 @@ router.post("/loan/:id/reject", authMiddleware, requireTenant, async (req: AuthR
         });
         res.json({ success: true, application: app });
     } catch {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// BRD v5.0 LN-A02: GET /api/v1/approvals/:id/comparison - Side-by-side comparison
+router.get("/:id/comparison", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const { source } = req.query as { source: string };
+        const itemId = req.params.id;
+
+        if (source === "loan_product") {
+            const pendingProduct = await prisma.loanProduct.findFirst({
+                where: { id: itemId, tenantId, status: "PENDING_APPROVAL" },
+            });
+
+            if (!pendingProduct) {
+                res.status(404).json({ success: false, message: "Product not found" });
+                return;
+            }
+
+            // Find active version for comparison
+            const activeProduct = await prisma.loanProduct.findFirst({
+                where: {
+                    tenantId,
+                    productCode: pendingProduct.productCode,
+                    status: "ACTIVE",
+                },
+            });
+
+            const comparison: any = {
+                current: activeProduct || null,
+                proposed: pendingProduct,
+                changes: [],
+            };
+
+            if (activeProduct) {
+                const fields = [
+                    "productName", "category", "targetSegment", "description",
+                    "repaymentStructure", "processingFeeType", "processingFeeValue",
+                    "documentationCharge", "insurancePremiumType", "insurancePremiumValue",
+                    "stampDutyPercent", "interestSchemeId",
+                ];
+
+                fields.forEach((field) => {
+                    const currentVal = (activeProduct as any)[field];
+                    const proposedVal = (pendingProduct as any)[field];
+                    if (currentVal !== proposedVal) {
+                        comparison.changes.push({
+                            field,
+                            current: currentVal,
+                            proposed: proposedVal,
+                        });
+                    }
+                });
+            } else {
+                // New product, all fields are changes
+                comparison.changes.push({
+                    field: "productName",
+                    current: null,
+                    proposed: pendingProduct.productName,
+                });
+            }
+
+            res.json({ success: true, comparison });
+        } else if (source === "interest_scheme") {
+            const pendingScheme = await prisma.interestScheme.findFirst({
+                where: { id: itemId, tenantId, status: "PENDING_APPROVAL" },
+                include: { slabs: true },
+            });
+
+            if (!pendingScheme) {
+                res.status(404).json({ success: false, message: "Scheme not found" });
+                return;
+            }
+
+            const activeScheme = await prisma.interestScheme.findFirst({
+                where: {
+                    tenantId,
+                    schemeCode: pendingScheme.schemeCode,
+                    status: "ACTIVE",
+                },
+                include: { slabs: true },
+            });
+
+            const comparison: any = {
+                current: activeScheme || null,
+                proposed: pendingScheme,
+                changes: [],
+            };
+
+            if (activeScheme) {
+                const fields = ["schemeName", "interestMethod", "compoundingFreq", "slabApplicationMethod", "effectiveFromDate"];
+                fields.forEach((field) => {
+                    const currentVal = (activeScheme as any)[field];
+                    const proposedVal = (pendingScheme as any)[field];
+                    if (currentVal !== proposedVal) {
+                        comparison.changes.push({
+                            field,
+                            current: currentVal,
+                            proposed: proposedVal,
+                        });
+                    }
+                });
+
+                // Compare slabs
+                if (JSON.stringify(activeScheme.slabs) !== JSON.stringify(pendingScheme.slabs)) {
+                    comparison.changes.push({
+                        field: "slabs",
+                        current: activeScheme.slabs,
+                        proposed: pendingScheme.slabs,
+                    });
+                }
+            }
+
+            res.json({ success: true, comparison });
+        } else {
+            res.status(400).json({ success: false, message: "Comparison not supported for this source type" });
+        }
+    } catch (err) {
+        console.error("[Approvals Comparison]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// BRD v5.0 LN-A03: POST /api/v1/approvals/product/:id/approve - Approve loan product with reason codes
+router.post("/product/:id/approve", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const checkerId = req.user!.id;
+        const { action, reasonCode, reason } = req.body as {
+            action: "APPROVE" | "REJECT";
+            reasonCode: string;
+            reason?: string;
+        };
+
+        const product = await prisma.loanProduct.findFirst({
+            where: { id: req.params.id, tenantId, status: "PENDING_APPROVAL" },
+        });
+
+        if (!product) {
+            res.status(404).json({ success: false, message: "Product not found" });
+            return;
+        }
+
+        // Find active version to supersede
+        const activeVersion = action === "APPROVE" ? await prisma.loanProduct.findFirst({
+            where: {
+                tenantId,
+                productCode: product.productCode,
+                status: "ACTIVE",
+            },
+        }) : null;
+
+        if (activeVersion && activeVersion.id !== product.id) {
+            await prisma.loanProduct.update({
+                where: { id: activeVersion.id },
+                data: { status: "SUPERSEDED" },
+            });
+        }
+
+        const updated = await prisma.loanProduct.update({
+            where: { id: req.params.id },
+            data: action === "APPROVE" ? {
+                status: "ACTIVE",
+                checkerId,
+                approvedAt: new Date(),
+                previousVersionId: activeVersion?.id,
+                version: activeVersion ? activeVersion.version + 1 : 1,
+            } : {
+                status: "DRAFT",
+                checkerId,
+                rejectedAt: new Date(),
+                rejectionReason: reason || reasonCode,
+            },
+        });
+
+        res.json({ success: true, product: updated });
+    } catch (err) {
+        console.error("[Approvals Product Approve]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// BRD v5.0 LN-A03: POST /api/v1/approvals/scheme/:id/approve - Approve interest scheme with reason codes
+router.post("/scheme/:id/approve", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user!.tenantId!;
+        const checkerId = req.user!.id;
+        const { action, reasonCode, reason } = req.body as {
+            action: "APPROVE" | "REJECT";
+            reasonCode: string;
+            reason?: string;
+        };
+
+        // Use existing interest scheme approve endpoint logic
+        const scheme = await prisma.interestScheme.findFirst({
+            where: { id: req.params.id, tenantId, status: "PENDING_APPROVAL" },
+        });
+
+        if (!scheme) {
+            res.status(404).json({ success: false, message: "Scheme not found" });
+            return;
+        }
+
+        const updated = await prisma.interestScheme.update({
+            where: { id: req.params.id },
+            data: action === "APPROVE" ? {
+                status: "ACTIVE",
+                checkerId,
+                approvedAt: new Date(),
+            } : {
+                status: "DRAFT",
+                checkerId,
+                rejectedAt: new Date(),
+                rejectionReason: reason || reasonCode,
+            },
+        });
+
+        res.json({ success: true, scheme: updated });
+    } catch (err) {
+        console.error("[Approvals Scheme Approve]", err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });

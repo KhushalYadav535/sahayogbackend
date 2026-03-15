@@ -224,6 +224,35 @@ router.post("/login-dob", async (req: any, res: Response): Promise<void> => {
     }
 });
 
+// GET /api/v1/me/profile - Get member profile
+router.get("/profile", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { id: req.member!.memberId },
+            select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                memberNumber: true,
+                phone: true,
+                email: true,
+                address: true,
+                dateOfBirth: true,
+                aadhaar: true,
+                status: true,
+            },
+        });
+        if (!member) {
+            res.status(404).json({ success: false, message: "Member not found" });
+            return;
+        }
+        res.json({ success: true, member });
+    } catch (err) {
+        console.error("[Member Profile]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 // GET /api/v1/me/summary - Dashboard stats for member portal
 router.get("/summary", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
     try {
@@ -241,7 +270,7 @@ router.get("/summary", memberAuthMiddleware, async (req: MemberAuthRequest, res:
         // 3. Deposits (FDR/RD)
         const depositsList = await prisma.deposit.findMany({ where: { memberId, status: "active" } });
         const depositsCount = depositsList.length;
-        const totalDepositAmount = depositsList.reduce((sum, dep) => sum + Number(dep.amount), 0);
+        const totalDepositAmount = depositsList.reduce((sum, dep) => sum + Number(dep.principal), 0);
 
         // 4. Next upcoming EMI
         const upcomingEmis = await prisma.emiSchedule.findMany({
@@ -349,6 +378,53 @@ router.get("/loans", memberAuthMiddleware, async (req: MemberAuthRequest, res: R
     }
 });
 
+// GET /api/v1/me/products - Get active loan products for member portal (BRD v5.0 LN-F06)
+router.get("/products", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.member!.tenantId;
+        
+        const products = await prisma.loanProduct.findMany({
+            where: {
+                tenantId,
+                isActive: true,
+                status: "ACTIVE",
+            },
+            select: {
+                id: true,
+                productCode: true,
+                productName: true,
+                category: true,
+                targetSegment: true,
+                description: true,
+                repaymentStructure: true,
+                processingFeeType: true,
+                processingFeeValue: true,
+                documentationCharge: true,
+                interestScheme: {
+                    select: {
+                        schemeCode: true,
+                        schemeName: true,
+                        slabs: {
+                            select: {
+                                rate: true,
+                                fromAmount: true,
+                                toAmount: true,
+                            },
+                            orderBy: { fromAmount: "asc" },
+                        },
+                    },
+                },
+            },
+            orderBy: { productName: "asc" },
+        });
+
+        res.json({ success: true, products });
+    } catch (err) {
+        console.error("[Member Products]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 // GET /api/v1/me/loans/:id/schedule
 router.get("/loans/:id/schedule", memberAuthMiddleware, async (req: MemberAuthRequest, res: Response): Promise<void> => {
     try {
@@ -413,7 +489,7 @@ router.get("/deposits", memberAuthMiddleware, async (req: MemberAuthRequest, res
                 id: true,
                 depositNumber: true,
                 depositType: true,
-                amount: true,
+                principal: true, // Fixed: was 'amount', should be 'principal'
                 maturityAmount: true,
                 maturityDate: true,
                 status: true,
@@ -423,7 +499,8 @@ router.get("/deposits", memberAuthMiddleware, async (req: MemberAuthRequest, res
             },
         });
         res.json({ success: true, deposits });
-    } catch {
+    } catch (err) {
+        console.error("[me/deposits] error:", err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
@@ -451,7 +528,7 @@ router.get("/deposits/maturity-tracker", memberAuthMiddleware, async (req: Membe
                 id: true,
                 depositNumber: true,
                 depositType: true,
-                amount: true,
+                principal: true, // Fixed: was 'amount', should be 'principal'
                 maturityAmount: true,
                 maturityDate: true,
                 interestRate: true,

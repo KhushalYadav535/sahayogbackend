@@ -16,8 +16,15 @@ import platformConfigRoutes from "./routes/platform-config";
 import platformUsageRoutes from "./routes/platform-usage";
 import configRoutes from "./routes/config";
 import memberRoutes from "./routes/members";
+import memberPhotoSignatureRoutes from "./routes/member-photo-signature";
 import sbRoutes from "./routes/sb";
 import loanRoutes from "./routes/loans";
+import loanProductRoutes from "./routes/loan-products";
+import loanDocumentRoutes from "./routes/loan-documents";
+import loanSanctionRoutes from "./routes/loan-sanction";
+import loanDisbursementRoutes from "./routes/loan-disbursement";
+import loanCollateralRoutes from "./routes/loan-collateral";
+import guarantorExposureRoutes from "./routes/guarantor-exposure";
 import depositRoutes from "./routes/deposits";
 import glRoutes from "./routes/gl";
 import suspenseRoutes from "./routes/suspense";
@@ -111,8 +118,15 @@ v1.use("/platform/config", platformConfigRoutes);
 v1.use("/platform/usage", platformUsageRoutes);
 v1.use("/config", configRoutes);
 v1.use("/members", memberRoutes);
+v1.use("/members", memberPhotoSignatureRoutes); // BRD v5.0: /members/:memberId/photo/current, /members/:memberId/signature/current
 v1.use("/sb", sbRoutes);
+v1.use("/loans/products", loanProductRoutes); // Must be before /loans to avoid route conflict
 v1.use("/loans", loanRoutes);
+v1.use("/loans", loanDocumentRoutes); // Document routes: /loans/applications/:id/documents, /loans/products/:id/checklist
+v1.use("/loans", loanSanctionRoutes); // Sanction routes: /loans/applications/:id/generate-can, /loans/applications/:id/sanction
+v1.use("/loans", loanDisbursementRoutes); // Disbursement routes: /loans/applications/:id/pre-disbursement-check, /loans/:loanId/disburse
+v1.use("/loans", loanCollateralRoutes); // Collateral routes: /loans/applications/:id/collateral, /loans/collateral/gold/calculate
+v1.use("/loans", guarantorExposureRoutes); // Guarantor routes: /loans/guarantors/:memberId/exposure
 v1.use("/deposits", depositRoutes);
 v1.use("/gl", glRoutes);
 v1.use("/suspense", suspenseRoutes);

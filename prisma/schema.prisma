@@ -28,39 +28,45 @@ model Tenant {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  members               Member[]
-  sbAccounts            SbAccount[]
-  loans                 Loan[]
-  glEntries             GlEntry[]
-  vouchers              Voucher[]
-  glAccounts            GlAccount[]
-  config                SystemConfig[]
-  configVersions        TenantConfigVersion[]
-  users                 User[]
-  permissionMatrix      PermissionMatrix[]
-  deposits              Deposit[]
-  bodDirectors          BodDirector[]
-  committees            Committee[]
-  agms                  Agm[]
-  resolutions           Resolution[]
-  complianceEvents      ComplianceEvent[]
-  bylaws                Bylaw[]
-  meetingMinutes        MeetingMinutes[]
-  approvalOverrides     ApprovalOverride[]
-  approvalThresholds    ApprovalThreshold[]
-  groupLoans            GroupLoan[] // LN-023
-  billingOverride       TenantBilling?
-  credits               TenantCredits?
-  usageSnapshots        TenantUsageSnapshot[]
-  suspenseEntries       SuspenseEntry[]
-  bankStatementUploads  BankStatementUpload[]
-  paymentRequests       PaymentRequest[]
-  notificationLogs      NotificationLog[]
-  interestSchemes       InterestScheme[]
-  interestAccruals      InterestAccrual[]
-  memberPhotos          MemberPhoto[]
-  memberSignatures      MemberSignature[]
-  recalculationRequests RecalculationRequest[]
+  members                Member[]
+  sbAccounts             SbAccount[]
+  loans                  Loan[]
+  glEntries              GlEntry[]
+  vouchers               Voucher[]
+  glAccounts             GlAccount[]
+  config                 SystemConfig[]
+  configVersions         TenantConfigVersion[]
+  users                  User[]
+  permissionMatrix       PermissionMatrix[]
+  deposits               Deposit[]
+  bodDirectors           BodDirector[]
+  committees             Committee[]
+  agms                   Agm[]
+  resolutions            Resolution[]
+  complianceEvents       ComplianceEvent[]
+  bylaws                 Bylaw[]
+  meetingMinutes         MeetingMinutes[]
+  approvalOverrides      ApprovalOverride[]
+  approvalThresholds     ApprovalThreshold[]
+  groupLoans             GroupLoan[] // LN-023
+  billingOverride        TenantBilling?
+  credits                TenantCredits?
+  usageSnapshots         TenantUsageSnapshot[]
+  suspenseEntries        SuspenseEntry[]
+  bankStatementUploads   BankStatementUpload[]
+  paymentRequests        PaymentRequest[]
+  notificationLogs       NotificationLog[]
+  interestSchemes        InterestScheme[]
+  interestAccruals       InterestAccrual[]
+  memberPhotos           MemberPhoto[]
+  memberSignatures       MemberSignature[]
+  recalculationRequests  RecalculationRequest[]
+  loanProducts           LoanProduct[] // BRD v5.0 LN-P01
+  loanDocumentChecklists LoanDocumentChecklist[] // BRD v5.0 LN-DC01
+  collaterals            Collateral[] // BRD v5.0 LN-COL01
+  creditAppraisalNotes   CreditAppraisalNote[] // BRD v5.0 LN-CAN01
+  loanSanctionLetters    LoanSanctionLetter[] // BRD v5.0 LN-CAN05
+  disbursementVouchers   DisbursementVoucher[] // BRD v5.0 LN-DIS05
 
   // ACC-006: Month-End Closing
   closedPeriods String[] @default([]) // Array of closed periods (YYYY-MM format)
@@ -370,7 +376,7 @@ model LoanApplication {
   id                String    @id @default(cuid())
   tenantId          String
   memberId          String
-  guarantorMemberId String? // LN-014 guarantor (if existing member)
+  guarantorMemberId String? // LN-014 guarantor (if existing member) - DEPRECATED, use guarantorIds
   loanType          String // personal | agricultural | business | housing | education | gold
   loanSubType       String? // COA: kcc | crop | livestock | gold | lad | shg | msme | housing | staff | micro | personal
   amountRequested   Decimal   @db.Decimal(15, 2)
@@ -379,7 +385,7 @@ model LoanApplication {
   moratoriumMonths  Int       @default(0) // LN-005
   riskScore         Decimal?  @db.Decimal(5, 2)
   riskCategory      String? // LOW | MEDIUM | HIGH | GREEN | AMBER | RED
-  status            String    @default("pending") // pending | approved | rejected | disbursed
+  status            String    @default("APPLIED") // BRD v5.0: APPLIED | UNDER_REVIEW | PENDING_SANCTION | SANCTIONED | SANCTION_ACKNOWLEDGED | REJECTED | DISBURSED | PARTIALLY_DISBURSED
   remarks           String?
   appliedAt         DateTime  @default(now())
   reviewedAt        DateTime?
@@ -387,10 +393,24 @@ model LoanApplication {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  member      Member  @relation(fields: [memberId], references: [id])
-  loan        Loan?
+  // BRD v5.0 LN-F01 to LN-F05: Enhanced application fields
+  productId           String? // Link to LoanProduct
+  employmentType      String? // SALARIED | SELF_EMPLOYED | FARMER | BUSINESS | OTHER
+  monthlyIncome       Decimal? @db.Decimal(15, 2)
+  existingLiabilities String? // Free text
+  propertyAssetDesc   String? // For secured loans
+  guarantorIds        String[] @default([]) // Multiple guarantors (LN-F05)
+
+  member              Member                @relation(fields: [memberId], references: [id])
+  loan                Loan?
+  product             LoanProduct?          @relation(fields: [productId], references: [id])
   // LN-023: Group Loan/JLG
-  groupLoanId String? // Link to GroupLoan if part of JLG application
+  groupLoanId         String? // Link to GroupLoan if part of JLG application
+  // BRD v5.0 relations
+  documentTrackers    LoanDocumentTracker[]
+  collateral          Collateral?
+  creditAppraisalNote CreditAppraisalNote?
+  sanctionLetter      LoanSanctionLetter?
 
   @@map("loan_applications")
 }
@@ -467,6 +487,10 @@ model Loan {
   collateralFdrId        String? // COA: FDR ID used as collateral (for LAD)
   householdIncome        Decimal?  @db.Decimal(15, 2) // COA: declared income for microfinance cap
   bodResolutionRef       String? // COA: BOD resolution reference required for write-off
+  // BRD v5.0 fields
+  productId              String? // Link to LoanProduct
+  disbursementMode       String? // CASH | NEFT | RTGS | INTERNAL_TRANSFER | DEMAND_DRAFT
+  disbursementVoucherId  String?
   // LN-010: Restructuring/Refinance
   restructureCount       Int       @default(0) // Track number of restructures
   restructuredFromLoanId String? // Link to original loan if refinanced
@@ -492,13 +516,17 @@ model Loan {
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
-  tenant           Tenant          @relation(fields: [tenantId], references: [id])
-  member           Member          @relation(fields: [memberId], references: [id])
-  application      LoanApplication @relation(fields: [applicationId], references: [id])
-  emiSchedule      EmiSchedule[]
-  restructuredFrom Loan?           @relation("LoanRestructuring", fields: [restructuredFromLoanId], references: [id])
-  refinancedTo     Loan[]          @relation("LoanRestructuring")
-  groupLoan        GroupLoan?      @relation(fields: [groupLoanId], references: [id])
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  member              Member               @relation(fields: [memberId], references: [id])
+  application         LoanApplication      @relation(fields: [applicationId], references: [id])
+  emiSchedule         EmiSchedule[]
+  restructuredFrom    Loan?                @relation("LoanRestructuring", fields: [restructuredFromLoanId], references: [id])
+  refinancedTo        Loan[]               @relation("LoanRestructuring")
+  groupLoan           GroupLoan?           @relation(fields: [groupLoanId], references: [id])
+  // BRD v5.0 relations
+  product             LoanProduct?         @relation(fields: [productId], references: [id])
+  collateral          Collateral?
+  disbursementVoucher DisbursementVoucher?
 
   @@unique([tenantId, loanNumber])
   @@map("loans")
@@ -521,6 +549,253 @@ model EmiSchedule {
   loan Loan @relation(fields: [loanId], references: [id])
 
   @@map("emi_schedule")
+}
+
+// ─────────────────────────────────────────────
+// BRD v5.0: LOAN MANAGEMENT MODULE 4
+// ─────────────────────────────────────────────
+
+// LN-P01 to LN-P07: Loan Product Master
+model LoanProduct {
+  id            String  @id @default(cuid())
+  tenantId      String
+  productCode   String // Auto-generated: LN-PROD-001
+  productName   String
+  category      String // PERSONAL | GOLD | HOUSING | AGRICULTURE | VEHICLE | EDUCATION | OTHER
+  targetSegment String?
+  description   String?
+  isActive      Boolean @default(true)
+
+  // Links (LN-P02)
+  interestSchemeId         String? // Link to InterestScheme
+  eligibilityRulesetId     String? // Reference to metadata key
+  documentationChecklistId String? // Link to LoanDocumentChecklist
+  repaymentStructure       String  @default("STANDARD_EMI") // STANDARD_EMI | BULLET | STEP_UP | IRREGULAR
+
+  // Fee Structure (LN-P03)
+  processingFeeType     String   @default("PERCENTAGE") // FLAT | PERCENTAGE
+  processingFeeValue    Decimal  @db.Decimal(10, 2)
+  documentationCharge   Decimal  @default(0) @db.Decimal(10, 2)
+  insurancePremiumType  String? // FLAT | PERCENTAGE
+  insurancePremiumValue Decimal? @db.Decimal(10, 2)
+  gstOnFees             Decimal  @default(18.00) @db.Decimal(5, 2) // Platform-scope, statutory
+  stampDutyPercent      Decimal? @db.Decimal(5, 2) // State-specific
+
+  // Insurance Linkage (LN-P06)
+  insuranceSchemeId String?
+
+  // Maker-Checker (LN-P04)
+  status          String    @default("DRAFT") // DRAFT | PENDING_APPROVAL | ACTIVE | SUPERSEDED | DEACTIVATED
+  makerId         String?
+  checkerId       String?
+  submittedAt     DateTime?
+  approvedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String?
+
+  // Version History (LN-P07)
+  version           Int     @default(1)
+  previousVersionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant             Tenant                  @relation(fields: [tenantId], references: [id])
+  interestScheme     InterestScheme?         @relation(fields: [interestSchemeId], references: [id])
+  applications       LoanApplication[]
+  documentChecklists LoanDocumentChecklist[]
+  loans              Loan[] // BRD v5.0: Loans using this product
+  previousVersion    LoanProduct?            @relation("ProductVersions", fields: [previousVersionId], references: [id])
+  versions           LoanProduct[]           @relation("ProductVersions")
+
+  @@unique([tenantId, productCode])
+  @@index([tenantId, status])
+  @@map("loan_products")
+}
+
+// LN-DC01: Loan Document Checklist
+model LoanDocumentChecklist {
+  id                   String   @id @default(cuid())
+  tenantId             String
+  productId            String? // If product-specific
+  documentName         String
+  category             String // INCOME_PROOF | IDENTITY | ADDRESS | PROPERTY | GUARANTOR | COLLATERAL | INSURANCE | OTHER
+  isMandatory          Boolean  @default(false)
+  applicableCategories String[] // Loan categories this applies to
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  tenant           Tenant                @relation(fields: [tenantId], references: [id])
+  product          LoanProduct?          @relation(fields: [productId], references: [id])
+  documentTrackers LoanDocumentTracker[]
+
+  @@map("loan_document_checklists")
+}
+
+// LN-DC02 to LN-DC04: Loan Document Tracker
+model LoanDocumentTracker {
+  id              String    @id @default(cuid())
+  applicationId   String
+  checklistId     String
+  documentName    String
+  category        String
+  isMandatory     Boolean
+  status          String    @default("PENDING") // PENDING | SUBMITTED | UNDER_REVIEW | VERIFIED | REJECTED
+  fileUrl         String?
+  uploadedAt      DateTime?
+  uploadedBy      String?
+  verifiedAt      DateTime?
+  verifiedBy      String?
+  rejectedAt      DateTime?
+  rejectedBy      String?
+  rejectionReason String?
+
+  application LoanApplication       @relation(fields: [applicationId], references: [id])
+  checklist   LoanDocumentChecklist @relation(fields: [checklistId], references: [id])
+
+  @@unique([applicationId, checklistId])
+  @@index([applicationId, status])
+  @@map("loan_document_trackers")
+}
+
+// LN-COL01 to LN-COL04: Collateral Valuation & Mortgage
+model Collateral {
+  id              String   @id @default(cuid())
+  tenantId        String
+  applicationId   String   @unique // One-to-one with application
+  loanId          String?  @unique // One-to-one with loan (set after loan creation)
+  collateralType  String // PROPERTY | GOLD | VEHICLE | FDR | SHARES | OTHER
+  description     String?
+  valuationDate   DateTime
+  valuationAmount Decimal  @db.Decimal(15, 2)
+  valuerName      String?
+  ltvRatio        Decimal  @db.Decimal(5, 2) // Auto-calculated
+
+  // Gold-specific (LN-COL02)
+  goldPurity        String? // Karatage
+  goldGrossWeight   Decimal? @db.Decimal(10, 3) // grams
+  goldNetWeight     Decimal? @db.Decimal(10, 3) // grams
+  goldCertRefNumber String?
+  goldRatePerGram   Decimal? @db.Decimal(10, 2)
+
+  // Property-specific (LN-COL03)
+  chargeType         String? // EQUITABLE_MORTGAGE | REGISTERED_MORTGAGE
+  registrationDate   DateTime?
+  subRegistrarOffice String?
+  registrationNumber String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id])
+  application LoanApplication @relation(fields: [applicationId], references: [id])
+  loan        Loan?           @relation(fields: [loanId], references: [id])
+
+  @@index([applicationId])
+  @@index([loanId])
+  @@map("collaterals")
+}
+
+// LN-CAN01 to LN-CAN06: Credit Appraisal Note
+model CreditAppraisalNote {
+  id            String @id @default(cuid())
+  applicationId String @unique
+  tenantId      String
+
+  // Auto-generated content (LN-CAN01)
+  memberProfileSummary      Json // Member details snapshot
+  aiRiskScore               Decimal  @db.Decimal(5, 2)
+  aiRiskExplanation         String?
+  incomeAnalysis            Json?
+  existingObligations       Json?
+  proposedLoanTerms         Json?
+  ltvRatio                  Decimal? @db.Decimal(5, 2)
+  guarantorDetails          Json?
+  documentStatusSummary     Json?
+  loanOfficerRecommendation String // RECOMMEND | HOLD | REFER_COMMITTEE
+
+  // Sanction Workflow (LN-CAN02, LN-CAN03)
+  sanctionLevel       Int       @default(1) // 1, 2, or 3
+  sanctionStatus      String    @default("PENDING") // PENDING | APPROVED | REJECTED | ESCALATED
+  approvedBy          String?
+  approvedAt          DateTime?
+  rejectedBy          String?
+  rejectedAt          DateTime?
+  rejectionReasonCode String?
+  rejectionReason     String?
+  escalatedTo         String?
+  escalatedAt         DateTime?
+
+  // Exception Authorization (LN-CAN04)
+  exceptionGranted       Boolean @default(false)
+  exceptionJustification String?
+  exceptionAuthorizedBy  String?
+
+  // Credit Bureau (LN-CAN06)
+  cibilScore         Decimal?  @db.Decimal(5, 2)
+  cibilReportDate    DateTime?
+  cibilReportId      String?
+  experianScore      Decimal?  @db.Decimal(5, 2)
+  experianReportDate DateTime?
+  experianReportId   String?
+
+  generatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id])
+  application LoanApplication @relation(fields: [applicationId], references: [id])
+
+  @@index([tenantId, sanctionStatus])
+  @@map("credit_appraisal_notes")
+}
+
+// LN-CAN05: Loan Sanction Letter
+model LoanSanctionLetter {
+  id                 String  @id @default(cuid())
+  applicationId      String  @unique
+  tenantId           String
+  sanctionedAmount   Decimal @db.Decimal(15, 2)
+  approvedTenure     Int
+  emiScheduleSummary Json
+  totalInterestOutgo Decimal @db.Decimal(15, 2)
+  securityDetails    Json?
+  termsAndConditions String?
+
+  // Member Acknowledgement
+  acknowledgedAt DateTime?
+  acknowledgedBy String? // Member ID or signature reference
+  signatureUrl   String?
+
+  generatedAt DateTime @default(now())
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id])
+  application LoanApplication @relation(fields: [applicationId], references: [id])
+
+  @@map("loan_sanction_letters")
+}
+
+// LN-DIS05: Disbursement Voucher
+model DisbursementVoucher {
+  id                 String   @id @default(cuid())
+  loanId             String   @unique // One-to-one with loan
+  tenantId           String
+  voucherNumber      String
+  disbursedAmount    Decimal  @db.Decimal(15, 2)
+  disbursementDate   DateTime
+  disbursementMode   String // CASH | NEFT | RTGS | INTERNAL_TRANSFER | DEMAND_DRAFT
+  bankAccountDetails Json? // For NEFT/RTGS
+  emiScheduleSummary Json
+  firstEmiDueDate    DateTime
+  memberSignatureUrl String? // For cash/internal transfer
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  loan   Loan   @relation(fields: [loanId], references: [id])
+
+  @@unique([tenantId, voucherNumber])
+  @@index([loanId])
+  @@map("disbursement_vouchers")
 }
 
 // ─────────────────────────────────────────────
@@ -1367,10 +1642,11 @@ model InterestScheme {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  tenant    Tenant                @relation(fields: [tenantId], references: [id])
-  slabs     InterestSchemeSlab[]
-  auditLogs InterestSchemeAudit[]
-  accruals  InterestAccrual[]
+  tenant       Tenant                @relation(fields: [tenantId], references: [id])
+  slabs        InterestSchemeSlab[]
+  auditLogs    InterestSchemeAudit[]
+  accruals     InterestAccrual[]
+  loanProducts LoanProduct[] // BRD v5.0: Loan products using this scheme
 
   @@unique([tenantId, schemeCode])
   @@index([tenantId, productType, status])
