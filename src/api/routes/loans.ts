@@ -811,8 +811,19 @@ router.get("/", authMiddleware, requireTenant, async (req: AuthRequest, res: Res
 });
 
 // ─── GET /api/v1/loans/:id ───────────────────────────────────────────────────
+// Note: This route should NOT match /loans/products - that route is handled by loan-products.ts
+// If products is passed as :id, it means the route order is wrong or old code is deployed
 router.get("/:id", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        // Defensive check: if "products" is passed as ID, it means route conflict
+        if (req.params.id === "products" || req.params.id === "applications" || req.params.id === "eligibility") {
+            res.status(404).json({ 
+                success: false, 
+                message: "Route not found. Please ensure backend is updated with latest code." 
+            });
+            return;
+        }
+        
         const tenantId = req.user!.tenantId!;
         const loan = await prisma.loan.findFirst({
             where: { id: req.params.id, tenantId },
