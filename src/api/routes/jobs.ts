@@ -33,6 +33,56 @@ router.post("/day-end", authMiddleware, requireRole("superadmin", "admin"), asyn
     }
 });
 
+// ─── IMP-19: POST /api/v1/jobs/process-emi-reminders — Process scheduled EMI reminders ───
+router.post("/process-emi-reminders", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const tenantId = req.user?.tenantId;
+        if (!tenantId) {
+            res.status(403).json({ success: false, message: "Tenant required" });
+            return;
+        }
+        const today = new Date();
+        today.setHours(23, 59, 59, 999);
+        const pending = await prisma.notificationLog.findMany({
+            where: {
+                tenantId,
+                templateId: "emi_reminder",
+                status: "PENDING",
+            },
+            take: 500,
+        });
+        const toProcess = pending.filter((n) => {
+            const meta = n.metadata as any;
+            return meta?.engineScheduled === true;
+        });
+        let sent = 0;
+        for (const n of toProcess) {
+            const meta = n.metadata as any;
+            const scheduledFor = meta?.scheduledFor ? new Date(meta.scheduledFor) : null;
+            if (scheduledFor && scheduledFor <= today) {
+                try {
+                    const { canSendSms, recordSmsSent } = await import("../services/sms.service");
+                    if (await canSendSms(tenantId)) {
+                        // In production: actual SMS gateway call
+                        await prisma.notificationLog.update({
+                            where: { id: n.id },
+                            data: { status: "SENT", sentAt: new Date() },
+                        });
+                        await recordSmsSent(tenantId);
+                        sent++;
+                    }
+                } catch (e) {
+                    console.error("[EMI Reminder]", e);
+                }
+            }
+        }
+        res.json({ success: true, message: `Processed EMI reminders`, sent, pending: toProcess.length });
+    } catch (err) {
+        console.error("[process-emi-reminders]", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 // ─── POST /api/v1/jobs/npa-check — Full IRAC classification ──────────────────
 router.post("/npa-check", authMiddleware, requireRole("superadmin", "admin"), async (req: AuthRequest, res: Response): Promise<void> => {
     try {

@@ -1050,15 +1050,26 @@ router.post("/:id/recovery", authMiddleware, requireTenant, async (req: AuthRequ
         const newRecovered = Number(loan.recoveredAmount ?? 0) + amount;
         const writeOffAmount = Number(loan.writeOffAmount ?? 0);
         const recoveryPercent = writeOffAmount > 0 ? (newRecovered / writeOffAmount) * 100 : 0;
+        const npaProvision = Number(loan.npaProvision ?? 0);
+        const provisionToReverse = npaProvision > 0 ? Math.min(amount, npaProvision) : 0;
+        const newNpaProvision = Math.max(0, npaProvision - provisionToReverse);
 
         await prisma.loan.update({
             where: { id: loan.id },
-            data: { recoveredAmount: newRecovered },
+            data: { recoveredAmount: newRecovered, npaProvision: newNpaProvision },
         });
 
         // COA: Recovery on cash basis → GL 11-01-0001
         await postGl(tenantId, "RECOVERY_WRITTEN_OFF", amount,
             `Recovery from written-off loan — ${loan.loanNumber} | Mode: ${recoveryMode || "CASH"}`, period);
+
+        // IMP-18: NPA provision reversal — auto GL on recovery (reverse provision proportionally)
+        if (provisionToReverse > 0) {
+            const { NPA_PROVISION_GL_CREDIT } = await import("../../lib/coa-rules");
+            const provGlCode = NPA_PROVISION_GL_CREDIT[(loan.npaCategory as keyof typeof NPA_PROVISION_GL_CREDIT) || "loss"] ?? "04-02-0006";
+            await postGl(tenantId, "NPA_PROVISION_REVERSAL", provisionToReverse,
+                `NPA provision reversal on recovery — ${loan.loanNumber}`, period, { provisionGlCode: provGlCode });
+        }
 
         await createAuditLog({
             tenantId,

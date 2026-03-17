@@ -516,6 +516,47 @@ router.put("/:loanId/disburse/approve", authMiddleware, requireTenant, async (re
       // Don't fail disbursement if notification fails
     }
 
+    // IMP-19: Disbursement → Reminder Engine — schedule EMI reminders (T-7, T-3, T-1)
+    try {
+      const member = await prisma.member.findUnique({ where: { id: loan.memberId } });
+      if (member?.phone && loan.emiSchedule?.length) {
+        const reminderDays = [7, 3, 1]; // T-7, T-3, T-1
+        for (const emi of loan.emiSchedule) {
+          const dueDate = emi.dueDate instanceof Date ? emi.dueDate : new Date(emi.dueDate);
+          const emiAmt = Number(emi.totalEmi ?? 0);
+          for (const daysBefore of reminderDays) {
+            const scheduledFor = new Date(dueDate);
+            scheduledFor.setDate(scheduledFor.getDate() - daysBefore);
+            if (scheduledFor > new Date()) {
+              await prisma.notificationLog.create({
+                data: {
+                  tenantId,
+                  memberId: member.id,
+                  type: "SMS",
+                  recipient: member.phone,
+                  templateId: "emi_reminder",
+                  status: "PENDING",
+                  body: `Reminder: EMI #${emi.installmentNo} of ₹${emiAmt.toFixed(0)} for loan ${loan.loanNumber} due on ${dueDate.toLocaleDateString()}. -SahayogAI`,
+                  metadata: {
+                    engineScheduled: true,
+                    scheduledFor: scheduledFor.toISOString(),
+                    loanId: loan.id,
+                    loanNumber: loan.loanNumber,
+                    emiNo: emi.installmentNo,
+                    dueDate: dueDate.toISOString(),
+                    emiAmount: emiAmt,
+                    daysBefore,
+                  },
+                },
+              });
+            }
+          }
+        }
+      }
+    } catch (remErr) {
+      console.error("[IMP-19 Reminder Engine]", remErr);
+    }
+
     res.json({
       success: true,
       loan: result.loan,

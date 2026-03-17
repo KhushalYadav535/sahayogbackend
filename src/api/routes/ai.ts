@@ -760,6 +760,59 @@ router.post("/override", authMiddleware, requireTenant, async (req: AuthRequest,
   }
 });
 
+// IMP-20: GET /api/v1/ai/audit-log — AI Audit Log Viewer (Compliance)
+router.get("/audit-log", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const tenantId = req.user!.tenantId!;
+    const { fromDate, toDate, feature, overrideCategory, modelVersion, page, limit } = req.query as {
+      fromDate?: string; toDate?: string; feature?: string; overrideCategory?: string; modelVersion?: string; page?: string; limit?: string;
+    };
+    const pageNum = Math.max(1, parseInt(page || "1"));
+    const limitNum = Math.min(100, Math.max(10, parseInt(limit || "50")));
+    const skip = (pageNum - 1) * limitNum;
+
+    const where: any = { tenantId: tenantId };
+    if (fromDate) where.createdAt = { ...(where.createdAt as any), gte: new Date(fromDate) };
+    if (toDate) where.createdAt = { ...(where.createdAt as any), lte: new Date(toDate + "T23:59:59.999Z") };
+    if (feature) where.feature = feature;
+    if (overrideCategory) where.overrideReasonCode = overrideCategory;
+    if (modelVersion) where.modelVersion = modelVersion;
+
+    const [logs, total] = await Promise.all([
+      prisma.aiAuditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limitNum,
+      }),
+      prisma.aiAuditLog.count({ where }),
+    ]);
+
+    res.json({
+      success: true,
+      logs: logs.map((l) => ({
+        id: l.id,
+        feature: l.feature,
+        modelVersion: l.modelVersion,
+        humanOverride: l.humanOverrideFlag,
+        overrideReasonCode: l.overrideReasonCode,
+        overrideReason: l.overrideReason,
+        success: l.success,
+        explanationText: l.explanationText,
+        createdAt: l.createdAt,
+        inputData: l.inputData,
+        outputData: l.outputData,
+      })),
+      total,
+      page: pageNum,
+      limit: limitNum,
+    });
+  } catch (err) {
+    console.error("[AI Audit Log]", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
 // AI-018: GET /api/v1/ai/bias-audit — AI Bias Audit Report
 router.get("/bias-audit", authMiddleware, requireTenant, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
